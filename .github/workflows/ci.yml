@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-erp-fastapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend-erp-fastapi/requirements.txt
+            backend-erp-fastapi/requirements-dev.txt
+
+      # requirements-dev.txt (pytest/pytest-asyncio/testcontainers/httpx) is
+      # expected to exist alongside requirements.txt; install both together
+      # in one pinned step. If it's ever missing (e.g. this lands before that
+      # work merges), fall back to prod deps only so the job doesn't hard-fail
+      # on a file another workstream owns.
+      - name: Install dependencies
+        run: |
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements.txt -r requirements-dev.txt
+          else
+            echo "::warning::requirements-dev.txt not found yet — installing requirements.txt only, pytest step will likely fail"
+            pip install -r requirements.txt
+          fi
+
+      # testcontainers needs Docker, which ubuntu-latest runners provide
+      # natively — no extra service setup required.
+      - name: Run pytest
+        run: pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-erp-react
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend-erp-react/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm run test
+
+      # `next build` also runs the full TS typecheck — deliberate
+      # belt-and-suspenders repeat of the tsc step above, not accidental.
+      - name: Build
+        run: npm run build

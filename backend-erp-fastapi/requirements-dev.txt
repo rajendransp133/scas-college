@@ -1,0 +1,8 @@
+# Test-only dependencies. Install on top of requirements.txt:
+#   uv pip install --python attadance_system\Scripts\python.exe -r requirements-dev.txt
+# Kept separate from the exactly-pinned prod requirements.txt so CI/dev tooling
+# doesn't ship into the production image.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+testcontainers[postgres]==4.14.2
+httpx==0.28.1

@@ -1,0 +1,108 @@
+# SCAS ERP — single repository (backend + frontend + ops in one tree).
+#
+# This file is deliberately self-sufficient: it covers both subprojects on its
+# own, so nothing leaks if a nested .gitignore is ever moved or deleted. The
+# per-subproject files (frontend-erp-react/.gitignore, backend-erp-fastapi/
+# .gitignore) are kept as framework-idiomatic backups — git honours all of them.
+
+# ---------------------------------------------------------------------------
+# Secrets — never commit
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env*.example
+
+# Real login passwords for every seeded account, written by seed_production.py.
+seed_credentials.csv
+
+# ---------------------------------------------------------------------------
+# Real student data — never commit
+# ---------------------------------------------------------------------------
+# Full names paired with 17-digit institutional register numbers, plus the
+# admission list's dates of birth, addresses and guardian phone numbers. Git
+# history is effectively permanent, so none of this belongs in it. Regenerate
+# students.csv from the spreadsheets with tools/build_students_csv.py.
+*.xlsx
+*.xls
+students.csv
+students-rejected.csv
+
+# ---------------------------------------------------------------------------
+# Dependencies (reinstallable — never committed, but keep them on disk)
+# ---------------------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# The checked-in Python venv. 310 MB of machine-specific binaries; rebuild with
+# `uv pip install -r requirements.txt`.
+attadance_system/
+.venv/
+venv/
+env/
+
+# ---------------------------------------------------------------------------
+# Build output / caches
+# ---------------------------------------------------------------------------
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+.turbo/
+.vercel/
+coverage/
+.swc/
+
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+
+# Tool cache (self-ignoring, listed here so a fresh clone is unambiguous).
+.fallow/
+
+# ---------------------------------------------------------------------------
+# Logs / temp
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+build-out*.txt
+*.tmp
+*.bak
+*.orig
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+**/.vscode/*
+!**/.vscode/extensions.json
+*.pem
+
+# ---------------------------------------------------------------------------
+# Local agent config (machine-specific; the shared CLAUDE.md files ARE tracked)
+# ---------------------------------------------------------------------------
+# **/ so the nested copies (frontend-erp-react/.claude/…) are covered too — a
+# path with a slash is otherwise anchored to this directory only.
+**/.claude/settings.local.json
+**/.claude/*.lock

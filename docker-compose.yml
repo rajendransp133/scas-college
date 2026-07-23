@@ -1,0 +1,165 @@
+# SCAS ERP — production-style Compose stack (Phase 4: containerization).
+#
+# Services: postgres, redis, migrate (one-shot, NOT part of `up`), api, web,
+# caddy. Only caddy is published to the host/internet — api and web are
+# reached over the internal compose network.
+#
+# Runbook (full detail in DEPLOY.md):
+#   cp .env.example .env              # fill in real values first
+#   docker compose build
+#   docker compose run --rm migrate   # apply schema — explicit, see below
+#   docker compose run --rm seed      # first deploy only — real college + accounts
+#   docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # 4 gunicorn workers * (db_pool_size=8 + db_max_overflow=4) = 48 max
+    # connections from `api` alone (see backend config.py) — 150 leaves
+    # headroom for `migrate`, ad-hoc psql, and future `api` replicas.
+    command: postgres -c max_connections=150
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Pure cache + rate-limit store (services/cache.py, rate_limit.py) — a
+    # cold cache and a reset rate-limit window on restart are both fine, so
+    # AOF persistence is disabled to avoid the disk I/O it would cost.
+    command: redis-server --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot migration runner — deliberately NOT wired into `api`'s startup
+  # and NOT part of the normal `up` flow. Run it explicitly as its own deploy
+  # step:
+  #   docker compose run --rm migrate
+  # This is what keeps a future `docker compose up -d --scale api=3` safe:
+  # if `alembic upgrade head` ran inside each replica's own startup instead,
+  # every replica would race the same migration against the same database
+  # concurrently. A single explicit one-shot container removes that race
+  # entirely — migrations always run exactly once, before `api` is (re)started.
+  migrate:
+    build:
+      context: ./backend-erp-fastapi
+    image: scas-erp-api:latest
+    command: ["sh", "-c", "python -m alembic upgrade head"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      JWT_SECRET: ${JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # One-shot production seed — run once on a freshly migrated, empty database:
+  #   docker compose run --rm seed
+  # Installs the real college (departments, programs, teachers, HODs, the
+  # current term) and every login account. Additive-only and guarded: it
+  # refuses to run if the database already has data, so an accidental second
+  # run is an error message, not damage. Generated passwords land in
+  # ./seed_credentials.csv on the host (gitignored) — distribute, then delete.
+  # Set ADMIN_PASSWORD in .env to control the admin password; leave it unset
+  # for a random one (also written to the CSV).
+  seed:
+    build:
+      context: ./backend-erp-fastapi
+    image: scas-erp-api:latest
+    command: ["python", "seed_production.py"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CREDENTIALS_FILE: /out/seed_credentials.csv
+    volumes:
+      - ./:/out
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./backend-erp-fastapi
+    image: scas-erp-api:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # Read at container start (not baked in), see backend Dockerfile CMD.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      # JSON array string, e.g. ["https://your-domain.com"] — see .env.example.
+      CORS_ORIGINS: ${CORS_ORIGINS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No `ports:` — not published to the host. Only Caddy is internet-facing;
+    # everything else reaches this over the compose network as `api:8000`.
+    expose:
+      - "8000"
+
+  web:
+    build:
+      context: ./frontend-erp-react
+      args:
+        # Must be a build ARG (not just an env var) — Next.js inlines
+        # NEXT_PUBLIC_* into the client bundle at build time. Passing it only
+        # under `environment:` below would have no effect on what shipped in
+        # the bundle.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    image: scas-erp-web:latest
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+    depends_on:
+      - api
+    # No `ports:` — reached over the compose network as `web:3000`, only via
+    # Caddy.
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      # Templated into the Caddyfile ({$DOMAIN}) — see Caddyfile's own
+      # comment for the local-testing (no real domain) alternative.
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

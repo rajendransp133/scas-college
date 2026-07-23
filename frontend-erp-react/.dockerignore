@@ -1,0 +1,53 @@
+# Keep the build context to app code only.
+#
+# The image runs `next build`, so source, config and public/ must all ship —
+# only dependencies, build output and non-app files are excluded here.
+
+node_modules
+.next
+out
+build
+.turbo
+.vercel
+coverage
+*.tsbuildinfo
+
+# Local env. NEXT_PUBLIC_* values are passed as Docker build args (see
+# docker-compose.yml), never read from a file at build time.
+.env.local
+.env*.local
+
+.git
+.gitignore
+.dockerignore
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Stray captured build logs — not app code, shouldn't ride into the image.
+build-out*.txt
+
+# Student data never belongs in the web image.
+*.xlsx
+*.xls
+*.csv
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Agent tooling — local config/caches, never app code.
+.claude/
+.fallow/
+.mcp.json
+
+# Not needed inside the image
+README.md
+AGENTS.md
+CLAUDE.md
+DEMO_WALKTHROUGH.md
+FASTAPI-BACKEND-PLAN.md

@@ -1,0 +1,68 @@
+# SCAS ERP — reverse proxy + TLS termination (the only internet-facing
+# service in docker-compose.yml; api and web are internal-only).
+#
+# {$DOMAIN} is substituted from the environment (Caddy supports env var
+# interpolation in Caddyfiles; docker-compose.yml passes DOMAIN through from
+# the root .env). Caddy's automatic HTTPS needs a *real* domain you control
+# to issue a Let's Encrypt certificate for — there is no such domain during
+# local development, so don't point this at "localhost" and expect TLS to
+# work. For local testing, comment out the block below and uncomment the
+# `:80` block at the bottom instead (or copy that block into a sibling
+# `Caddyfile.dev` and run `caddy run --config Caddyfile.dev
+# --adapter caddyfile` / mount that file instead in a dev compose override).
+
+{$DOMAIN} {
+	# Path-based routing, chosen over an api.{$DOMAIN} subdomain: one domain,
+	# one certificate, no extra DNS record to manage for a single-VPS deploy.
+	# NEXT_PUBLIC_API_URL (root .env) is set to https://{$DOMAIN}/api to match.
+	#
+	# `handle_path` strips the matched /api prefix before proxying, so
+	# FastAPI's own routes (/auth/login, /students, ...) don't need an /api
+	# prefix baked into the app — only into the public URL.
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	# Security headers deferred from Phase 2 on purpose — this is the edge's
+	# job, not FastAPI's. Pragmatic starting policy, not a hardened final
+	# CSP: Next.js ships inline styles/scripts by default, so 'unsafe-inline'
+	# is included for style-src/script-src to avoid breaking the app on day
+	# one. Tighten with nonces/hashes later if that becomes a priority.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+	}
+
+	# Real-client-IP note: Caddy's reverse_proxy sets X-Forwarded-For to the
+	# true remote address by default (appending to, not trusting, any
+	# inbound value — the caller can't spoof it since api/web aren't
+	# reachable except through this proxy). That alone is NOT sufficient on
+	# the backend side, though: slowapi's `get_remote_address` (used by
+	# rate_limit.py for the /auth/login limiter) reads `request.client.host`,
+	# not X-Forwarded-For — verified against slowapi's actual source. Behind
+	# Caddy, `request.client.host` would be Caddy's own container IP, which
+	# defeats the per-client rate limit entirely. rate_limit.py has been
+	# switched to slowapi's `get_ipaddr` (X-Forwarded-For-aware) to fix this;
+	# that's safe specifically because `api` is never published to the host
+	# (see docker-compose.yml) — Caddy is the only path in, so the header
+	# can't be forged by an external client.
+}
+
+# ---------------------------------------------------------------------------
+# Local testing without a domain (no ACME/HTTPS is possible without one):
+# comment out the {$DOMAIN} block above and uncomment this one.
+#
+# :80 {
+# 	handle_path /api/* {
+# 		reverse_proxy api:8000
+# 	}
+# 	handle {
+# 		reverse_proxy web:3000
+# 	}
+# }

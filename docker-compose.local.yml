@@ -1,0 +1,170 @@
+# SCAS ERP — self-contained local stack for Docker Desktop.
+#
+# Everything the app needs lives inside Docker: Postgres (with a persistent
+# named volume), Redis, the FastAPI backend, the Next.js frontend, and Caddy
+# as the single entry point. Nothing runs on the host, and no `.env` file is
+# required — every value below has a working default.
+#
+#   docker compose -f docker-compose.local.yml up -d --build
+#   ->  http://localhost:8080
+#
+# The `bootstrap` service runs automatically on `up`: it applies migrations
+# and then seeds the real college data + all login accounts, writing the
+# generated passwords to ./seed_credentials.csv on the host. It is safe to
+# re-run — seeding a database that already has data is skipped, not repeated.
+#
+# This file is deliberately separate from docker-compose.yml (the VPS /
+# real-domain deploy, see DEPLOY.md). The differences are only in the edge:
+# no Let's Encrypt, plain HTTP on a high port, and auto-bootstrap instead of
+# explicit one-shot deploy steps.
+
+name: scas-erp-local
+
+x-db-url: &db-url
+  postgresql+asyncpg://${POSTGRES_USER:-scas}:${POSTGRES_PASSWORD:-scas_local_pw}@postgres:5432/${POSTGRES_DB:-erp_scas}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-scas}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scas_local_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-erp_scas}
+    # Same math as the production compose file: 4 gunicorn workers *
+    # (db_pool_size=8 + db_max_overflow=4) = 48 from `api`, plus headroom.
+    command: postgres -c max_connections=150
+    volumes:
+      # Named volume, not a bind mount — the data survives `down` and every
+      # rebuild, and is only destroyed by `down -v`.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-scas} -d ${POSTGRES_DB:-erp_scas}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Published so you can point pgAdmin/DBeaver/psql at localhost:5432 while
+    # developing. Remove this block if you'd rather keep it internal-only.
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: migrate, then seed. Unlike the production compose file (where
+  # these are two deliberate, manually-run deploy steps), local wants a stack
+  # that comes up ready to log into — so this runs as part of `up`, and `api`
+  # waits for it to exit successfully.
+  #
+  # `|| true` on the seed step is what makes `up` idempotent: seed_production.py
+  # refuses to run against a database that already has data, which is the
+  # correct behaviour but would otherwise fail every restart after the first.
+  bootstrap:
+    build:
+      context: ./backend-erp-fastapi
+    image: scas-erp-api:latest
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        echo "==> applying migrations"
+        python -m alembic upgrade head
+        echo "==> seeding (skipped if the database already has data)"
+        python seed_production.py || echo "==> seed skipped — database already populated"
+    environment:
+      DATABASE_URL: *db-url
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      JWT_SECRET: ${JWT_SECRET:-local-only-secret-not-for-internet-use-2f8a91c4}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CREDENTIALS_FILE: /out/seed_credentials.csv
+    volumes:
+      # Drops seed_credentials.csv into the repo root on the host so you can
+      # open it in Excel. Gitignored — distribute the logins, then delete it.
+      - ./:/out
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./backend-erp-fastapi
+    image: scas-erp-api:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: *db-url
+      REDIS_URL: redis://redis:6379/0
+      # A concrete value (not the "dev-secret-change-me" default) so the
+      # ENVIRONMENT=production startup guard in config.py passes. It is fine
+      # for a laptop-only stack; set JWT_SECRET in a .env before exposing
+      # this to anything beyond localhost.
+      JWT_SECRET: ${JWT_SECRET:-local-only-secret-not-for-internet-use-2f8a91c4}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      # Same-origin through Caddy, so CORS is not actually exercised — set
+      # correctly anyway so a direct browser call to :8000 behaves.
+      CORS_ORIGINS: '["http://localhost:${APP_PORT:-8080}"]'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    expose:
+      - "8000"
+    healthcheck:
+      # No curl in python:3.12-slim; urllib is always there.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: ./frontend-erp-react
+      args:
+        # Build-time, not runtime: Next.js inlines NEXT_PUBLIC_* into the
+        # client bundle. Changing APP_PORT means rebuilding `web`, not just
+        # restarting it.
+        NEXT_PUBLIC_API_URL: http://localhost:${APP_PORT:-8080}/api
+    image: scas-erp-web:local
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${APP_PORT:-8080}/api
+    depends_on:
+      - api
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      # 8080 rather than 80 to avoid colliding with anything already bound on
+      # the host. Override with APP_PORT — but rebuild `web` afterwards.
+      - "${APP_PORT:-8080}:80"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

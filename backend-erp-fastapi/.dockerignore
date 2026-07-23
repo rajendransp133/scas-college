@@ -1,0 +1,59 @@
+# Keep the build context to app code only.
+#
+# Note this is NOT a copy of .gitignore. Two files are gitignored but must
+# still ship (students.csv, read by seed_production.py at seed time), and
+# several tracked files must NOT ship (tests, docs). Keep the two in sync by
+# intent, never by copy-paste.
+
+# Checked-in venv — never shipped, deps come from requirements.txt inside the
+# image instead.
+attadance_system/
+
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+alembic/versions/__pycache__/
+
+.env
+.env.example
+
+# Real plaintext login passwords for every seeded account. This file is
+# gitignored but was still landing in the build context, so `COPY . .` baked it
+# into the image at /app/seed_credentials.csv — anyone who could pull or run the
+# image had the whole college's logins.
+seed_credentials.csv
+
+# Student data that the image has no use for. students.csv is deliberately NOT
+# excluded: seed_production.py reads it, so it has to be in the image.
+students-rejected.csv
+*.xlsx
+*.xls
+
+# Test suite + fixtures: needs Docker and a throwaway Postgres, never runs in
+# the production image.
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+.git
+.gitignore
+.dockerignore
+
+*.log
+
+# Docs — read in the repo, not from inside a container.
+CLAUDE.md
+README.md
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Agent tooling — local config/caches, never app code.
+.claude/
+.fallow/
+.mcp.json

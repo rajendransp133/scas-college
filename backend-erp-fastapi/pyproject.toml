@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# One event loop for the whole session: the Postgres container, its async
+# engine/sessionmaker and the ASGI test client are all session/module-scoped
+# fixtures built on asyncpg connections, which are bound to the loop they were
+# created on. Per-test loops (pytest-asyncio's default) would make every
+# fixture after the first test fail with "attached to a different loop".
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+# Session-scoped container fixture logs a lot from testcontainers/docker;
+# keep default verbosity sane and show local variables only on failure.
+addopts = "-ra"

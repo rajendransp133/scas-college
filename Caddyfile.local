@@ -1,0 +1,31 @@
+# SCAS ERP — local (Docker Desktop) edge config, used by
+# docker-compose.local.yml. Plain HTTP on the container's :80, published to
+# the host as :8080.
+#
+# The production Caddyfile is the sibling `Caddyfile` — it terminates TLS for
+# a real domain via Let's Encrypt, which cannot work against localhost. The
+# routing below is otherwise identical, so what you exercise locally matches
+# what runs in production.
+
+:80 {
+	# Path-based routing, same as production: /api/* goes to FastAPI with the
+	# prefix stripped (handle_path), everything else to Next.js. This is why
+	# NEXT_PUBLIC_API_URL is http://localhost:8080/api.
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+
+	# HSTS is deliberately omitted here — this listener is plain HTTP, and
+	# sending HSTS on localhost would pin the browser to HTTPS for every
+	# other localhost port you ever use. The rest of the production headers
+	# apply unchanged.
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+	}
+}
