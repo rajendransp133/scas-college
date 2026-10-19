@@ -73,6 +73,9 @@ services:
       context: ./backend-erp-fastapi
     image: scas-erp-api:latest
     restart: "no"
+    # The image's unprivileged `app` user can't write the credentials CSV into
+    # the bind-mounted project directory (root-owned on a Linux host).
+    user: root
     command:
       - sh
       - -c
@@ -144,11 +147,11 @@ services:
         # Build-time, not runtime: Next.js inlines NEXT_PUBLIC_* into the
         # client bundle. Changing APP_PORT means rebuilding `web`, not just
         # restarting it.
-        NEXT_PUBLIC_API_URL: http://localhost:${APP_PORT:-8080}/api
+        NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:${APP_PORT:-8080}}/api
     image: scas-erp-web:local
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:${APP_PORT:-8080}/api
+      NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:${APP_PORT:-8080}}/api
     depends_on:
       - api
     expose:
