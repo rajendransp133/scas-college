@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowUpNarrowWide,
@@ -31,7 +32,7 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog";
 import { SelectField } from "@/components/select-field";
-import { EMPTY_ARRAY, errMsg } from "@/lib/api";
+import { apiGet, EMPTY_ARRAY, errMsg, qs, type Page } from "@/lib/api";
 import {
   useGraduateStudents,
   usePrograms,
@@ -41,14 +42,18 @@ import {
   useStudents,
   useTerms,
 } from "@/lib/queries";
+import { qk } from "@/lib/queries/keys";
 import { PageHeader } from "@/components/page-header";
 import { ListCardSkeleton } from "@/components/ui/card-skeleton";
 import { semesterInSession, type Student } from "@/lib/types";
 
+/** Names shown per cohort row; the count beside them is always the true total. */
+const PREVIEW_NAMES = 25;
+
 type PendingAction = {
   type: "promote" | "graduate";
   sem: number;
-  students: Student[];
+  count: number;
 };
 
 export default function PromotionsPage() {
@@ -90,13 +95,36 @@ export default function PromotionsPage() {
   });
   const outOfSessionCount = currentTerm ? (outOfSessionPage?.total ?? 0) : 0;
 
-  // Enrolled students of the selected program — one program is a few hundred
-  // rows, so a single generous page covers every cohort on the page.
-  const { data: enrolledPage, isLoading } = useStudents({
-    programId: programId || undefined,
-    status: "active",
-    pageSize: 200,
+  // One small request per semester of the program (at most 12): the cohort's
+  // true total plus a preview of names. The page used to fetch a single
+  // 200-row page for the whole program and act on the ids it happened to get,
+  // so in a program over 200 students the rest were silently never promoted.
+  const programSemesters = useMemo(
+    () =>
+      semesters
+        .filter((s) => s.programId === programId)
+        .map((s) => s.number)
+        .sort((a, b) => a - b),
+    [semesters, programId],
+  );
+  const cohortQueries = useQueries({
+    queries: programSemesters.map((sem) => {
+      const filters = {
+        programId,
+        semester: sem,
+        status: "active" as const,
+        pageSize: PREVIEW_NAMES,
+        sortBy: "name" as const,
+      };
+      return {
+        queryKey: qk.students(filters),
+        queryFn: () => apiGet<Page<Student>>(`/students${qs({ ...filters })}`),
+        enabled: !!programId,
+      };
+    }),
   });
+  const isLoading = !!programId && cohortQueries.some((q) => q.isPending);
+  const queryClient = useQueryClient();
   const { data: graduatedPage } = useStudents({
     programId: programId || undefined,
     status: "graduated",
@@ -116,30 +144,27 @@ export default function PromotionsPage() {
     return nums.length > 0 ? Math.max(...nums) : 0;
   }, [semesters, programId]);
 
-  const enrolled = useMemo(
-    () => (programId ? (enrolledPage?.items ?? []) : []),
-    [enrolledPage, programId],
-  );
-
   const graduatedCount = programId ? (graduatedPage?.total ?? 0) : 0;
 
-  // Group enrolled students into cohorts by current semester.
-  const cohorts = useMemo(() => {
-    const map = new Map<number, Student[]>();
-    for (const s of enrolled) {
-      const list = map.get(s.currentSemester) ?? [];
-      list.push(s);
-      map.set(s.currentSemester, list);
-    }
-    return [...map.entries()]
-      .map(([sem, list]) => ({ sem, list }))
-      .sort((a, b) => a.sem - b.sem);
-  }, [enrolled]);
+  // Cohorts by current semester — only those with someone in them.
+  const cohorts = programSemesters
+    .map((sem, i) => {
+      const data = cohortQueries[i]?.data;
+      return { sem, total: data?.total ?? 0, preview: data?.items ?? [] };
+    })
+    .filter((c) => c.total > 0);
 
   async function confirmPending() {
     if (!pending) return;
-    const ids = pending.students.map((s) => s.id);
     try {
+      // Every id in the cohort, fetched fresh at the moment of acting — never
+      // the preview page on screen.
+      const idFilters = { programId, semester: pending.sem, status: "active" as const };
+      const ids = await queryClient.fetchQuery({
+        queryKey: qk.studentIds(idFilters),
+        queryFn: () => apiGet<string[]>(`/students/ids${qs({ ...idFilters })}`),
+        staleTime: 0,
+      });
       if (pending.type === "promote") {
         const { repsRemoved } = await promoteStudents.mutateAsync(ids);
         toast.success(
@@ -234,7 +259,7 @@ export default function PromotionsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {cohorts.map(({ sem, list }) => {
+                {cohorts.map(({ sem, total, preview }) => {
                   const isFinal = maxSemester > 0 && sem >= maxSemester;
                   return (
                     <TableRow key={sem}>
@@ -259,29 +284,35 @@ export default function PromotionsPage() {
                       </TableCell>
                       <TableCell data-label="Students">
                         <span className="font-medium tabular-nums">
-                          {list.length}
+                          {total}
                         </span>{" "}
                         <span className="text-sm text-muted-foreground">
-                          · {list.map((s) => s.name).join(", ")}
+                          · {preview.map((s) => s.name).join(", ")}
+                          {total > preview.length &&
+                            ` and ${total - preview.length} more`}
                         </span>
                       </TableCell>
                       <TableCell data-label="">
                         <div className="flex items-center justify-end gap-2 max-md:justify-stretch max-md:[&>*]:flex-1">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() =>
-                              setPending({ type: "promote", sem, students: list })
-                            }
-                          >
-                            <ArrowUpNarrowWide size={16} />
-                            To Sem {sem + 1}
-                          </Button>
+                          {/* The final semester graduates — the server refuses
+                              to promote past the program's last semester. */}
+                          {!isFinal && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() =>
+                                setPending({ type: "promote", sem, count: total })
+                              }
+                            >
+                              <ArrowUpNarrowWide size={16} />
+                              To Sem {sem + 1}
+                            </Button>
+                          )}
                           <Button
                             variant={isFinal ? "default" : "outline"}
                             size="sm"
                             onClick={() =>
-                              setPending({ type: "graduate", sem, students: list })
+                              setPending({ type: "graduate", sem, count: total })
                             }
                           >
                             <GraduationCap size={16} />
@@ -317,13 +348,13 @@ export default function PromotionsPage() {
             <AlertDialogDescription>
               {pending?.type === "promote" ? (
                 <>
-                  This moves <strong>{pending?.students.length}</strong>{" "}
+                  This moves <strong>{pending?.count}</strong>{" "}
                   student(s) from semester {pending?.sem} to semester{" "}
                   {(pending?.sem ?? 0) + 1}.
                 </>
               ) : (
                 <>
-                  This marks <strong>{pending?.students.length}</strong>{" "}
+                  This marks <strong>{pending?.count}</strong>{" "}
                   student(s) as graduated. They are removed from class rosters
                   but keep their records.
                 </>

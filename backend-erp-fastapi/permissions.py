@@ -28,6 +28,13 @@ class Capabilities:
     manage_users: bool = False
     manage_academics: bool = False
     view_scope: ViewScope = "none"
+    # May read a student's *personal* fields (contact, address, date of birth,
+    # guardian). Distinct from `view_scope`, which decides *which* students are
+    # in reach at all: a teacher marking a register or a class-rep login can see
+    # the roster (roll + name + status) but not classmates' home addresses or
+    # guardian phone numbers. Held by roles with a pastoral/administrative need
+    # for the record — admin, principal, HOD — not by teacher/att-mgr/rep.
+    view_student_pii: bool = False
     mark_scope: Scope = "none"
     edit_attendance: bool = False
     delete_attendance: bool = False
@@ -45,6 +52,7 @@ CAPABILITIES: dict[UserRoleEnum, Capabilities] = {
         manage_users=True,
         manage_academics=True,
         view_scope="all",
+        view_student_pii=True,
         mark_scope="all",
         edit_attendance=True,
         delete_attendance=True,
@@ -65,6 +73,7 @@ CAPABILITIES: dict[UserRoleEnum, Capabilities] = {
         manage_users=True,
         manage_academics=True,
         view_scope="all",
+        view_student_pii=True,
         mark_scope="all",
         edit_attendance=False,
         delete_attendance=False,
@@ -85,7 +94,10 @@ CAPABILITIES: dict[UserRoleEnum, Capabilities] = {
         override_lock=True,
     ),
     UserRoleEnum.HOD: Capabilities(
-        view_scope="department", mark_scope="own", material_scope="own"
+        view_scope="department",
+        view_student_pii=True,
+        mark_scope="own",
+        material_scope="own",
     ),
     # Read-only, and only their own class — the login is shared by the whole
     # class, so anything it can reach is effectively public to those students.

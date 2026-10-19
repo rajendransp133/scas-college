@@ -367,6 +367,88 @@ async def test_an_admin_still_sees_everything(client, admin_headers, two_classes
     } <= ids
 
 
+# ---------------------------------------------------------------------------
+# Personal fields (address, DOB, guardian phone) are blanked for readers
+# without `view_student_pii` — a roster is roll + name + status, not a
+# classmate's home address. The narrow role is *in scope* here (its own class),
+# so this is a second gate behind read scoping, not the same one.
+# ---------------------------------------------------------------------------
+
+_PII_KEYS = ("email", "phone", "address", "dateOfBirth", "guardianName", "guardianPhone")
+
+
+def _assert_redacted(student: dict) -> None:
+    # Identity + placement survive; personal fields are nulled.
+    assert student["rollNumber"]
+    assert student["name"]
+    for key in _PII_KEYS:
+        assert student[key] is None, f"{key} leaked: {student[key]!r}"
+
+
+def _assert_full(student: dict) -> None:
+    assert student["address"] == "123 Test Street"
+    assert student["guardianPhone"] == "7000000000"
+    assert student["dateOfBirth"] == "2002-01-01"
+
+
+async def test_a_rep_sees_its_own_roster_without_pii(client, rep_headers, two_classes):
+    for path in ("/attendance/roster", "/attendance/class-roster"):
+        r = await client.get(
+            path,
+            params={"courseId": two_classes["mine"]["course"]["id"]},
+            headers=rep_headers,
+        )
+        assert r.status_code == 200, f"{path}: {r.text}"
+        rows = r.json()
+        assert rows, f"{path}: roster empty, nothing to check"
+        for student in rows:
+            _assert_redacted(student)
+
+
+async def test_a_reps_student_list_is_redacted(client, rep_headers, two_classes):
+    r = await client.get("/students", headers=rep_headers)
+    assert r.status_code == 200, r.text
+    rows = r.json()["items"]
+    assert rows
+    for student in rows:
+        _assert_redacted(student)
+
+
+async def test_a_teacher_sees_its_roster_without_pii(
+    client, teacher_headers, two_classes
+):
+    r = await client.get(
+        "/attendance/roster",
+        params={"courseId": two_classes["mine"]["course"]["id"]},
+        headers=teacher_headers,
+    )
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert rows
+    for student in rows:
+        _assert_redacted(student)
+
+
+async def test_an_hod_sees_full_pii_for_its_department(
+    client, hod_headers, two_classes
+):
+    r = await client.get("/students", headers=hod_headers)
+    assert r.status_code == 200, r.text
+    rows = r.json()["items"]
+    assert rows
+    _assert_full(rows[0])
+
+
+async def test_an_admin_sees_full_pii_on_student_detail(
+    client, admin_headers, two_classes
+):
+    r = await client.get(
+        f"/students/{two_classes['theirs']['student']['id']}", headers=admin_headers
+    )
+    assert r.status_code == 200, r.text
+    _assert_full(r.json())
+
+
 async def test_an_attendance_manager_still_sees_every_class(
     client, user_factory, login_as, two_classes
 ):

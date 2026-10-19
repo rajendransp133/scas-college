@@ -79,12 +79,18 @@ export function useTeacher(id: string | null | undefined) {
   })
 }
 
+function invalidateTeachers(qc: ReturnType<typeof useQueryClient>) {
+  qc.invalidateQueries({ queryKey: ["teachers"] })
+  qc.invalidateQueries({ queryKey: ["stats"] })
+  qc.invalidateQueries({ queryKey: qk.me })
+}
+
 export function useCreateTeacher() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: TeacherInput) => apiPost<Teacher>("/teachers", input),
     // May demote another HOD (single-HOD invariant) — refresh the whole list.
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers"] }),
+    onSuccess: () => invalidateTeachers(qc),
   })
 }
 
@@ -93,7 +99,7 @@ export function useUpdateTeacher() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: Partial<TeacherInput> }) =>
       apiPut<Teacher>(`/teachers/${id}`, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers"] }),
+    onSuccess: () => invalidateTeachers(qc),
   })
 }
 
@@ -111,6 +117,6 @@ export function useSetHod() {
   return useMutation({
     mutationFn: ({ id, isHod }: { id: string; isHod: boolean }) =>
       apiPost<Teacher>(`/teachers/${id}/hod`, { isHod }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["teachers"] }),
+    onSuccess: () => invalidateTeachers(qc),
   })
 }

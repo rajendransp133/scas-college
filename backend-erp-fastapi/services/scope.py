@@ -31,21 +31,31 @@ from fastapi import HTTPException, status
 from sqlalchemy import Select, and_, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import services.cache as cache_keys
 from models import Course, Program, Semester, Student, Teacher, User
 from permissions import role_capabilities
+from services.cache import cached
 
 # A class: the (program_id, semester_number) pair a cohort sits in.
 ClassKey = tuple[str, int]
 
 
 async def dept_course_ids(db: AsyncSession, department_id: str) -> set[str]:
-    rows = await db.execute(
-        select(Course.id)
-        .join(Semester, Course.semester_id == Semester.id)
-        .join(Program, Semester.program_id == Program.id)
-        .where(Program.department_id == department_id)
-    )
-    return {r[0] for r in rows.all()}
+    """Every course of a department's programs. A three-table join that an HOD
+    would otherwise run on every read, so it is cached per department and
+    dropped by `invalidate_curriculum()`. Returned as a fresh set — callers
+    union into it."""
+
+    async def load() -> list[str]:
+        rows = await db.execute(
+            select(Course.id)
+            .join(Semester, Course.semester_id == Semester.id)
+            .join(Program, Semester.program_id == Program.id)
+            .where(Program.department_id == department_id)
+        )
+        return sorted(r[0] for r in rows.all())
+
+    return set(await cached(f"{cache_keys.DEPT_COURSES}:{department_id}", load))
 
 
 async def class_course_ids(
@@ -59,7 +69,7 @@ async def class_course_ids(
     return {r[0] for r in rows.all()}
 
 
-async def _hod_department_id(db: AsyncSession, user: User) -> Optional[str]:
+async def hod_department_id(db: AsyncSession, user: User) -> Optional[str]:
     """An HOD's department comes from the linked teacher record, never from a
     request parameter — that indirection is the whole point."""
     if not user.teacher_id:
@@ -88,8 +98,12 @@ async def visible_course_ids(
     if scope == "own":
         return await _own_course_ids(db, user, term_id)
     if scope == "department":
-        ids = await _own_course_ids(db, user, term_id)
-        department_id = await _hod_department_id(db, user)
+        # A copy, never the set `own_course_ids` handed back: the in-memory
+        # cache once returned its own stored set here, and the `|=` below wrote
+        # the whole department into the HOD's cached *own* courses — the set
+        # `ensure_can_mark` / `ensure_can_upload` trust.
+        ids = set(await _own_course_ids(db, user, term_id))
+        department_id = await hod_department_id(db, user)
         if department_id:
             ids |= await dept_course_ids(db, department_id)
         return ids
@@ -126,6 +140,28 @@ async def visible_class_keys(
         .where(Course.id.in_(course_ids))
     )
     return {(r[0], r[1]) for r in rows.all()}
+
+
+async def aggregate_department_scope(
+    db: AsyncSession, user: User
+) -> Optional[str]:
+    """The department a college-level aggregate (`/stats/*`) is narrowed to.
+
+    `None` = the whole college. Those counters only make sense at college or
+    department grain, so roles scoped narrower than a department (teacher,
+    student-rep) get a 403 rather than a college-wide figure they may not read.
+    """
+    scope = role_capabilities(user.role).view_scope
+    if scope == "all":
+        return None
+    if scope == "department":
+        department_id = await hod_department_id(db, user)
+        if department_id:
+            return department_id
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="College-wide statistics are not available to this account",
+    )
 
 
 async def assert_course_visible(
@@ -180,7 +216,7 @@ async def apply_student_scope(
 
     clauses = []
     if scope == "department":
-        department_id = await _hod_department_id(db, user)
+        department_id = await hod_department_id(db, user)
         if department_id:
             clauses.append(Student.department_id == department_id)
 
@@ -207,7 +243,7 @@ async def assert_student_visible(
     if scope == "all":
         return
     if scope == "department":
-        department_id = await _hod_department_id(db, user)
+        department_id = await hod_department_id(db, user)
         if department_id and student.department_id == department_id:
             return
     keys = await visible_class_keys(db, user, term_id)

@@ -57,9 +57,18 @@ import { usePagination } from "@/hooks/use-pagination";
 import { useAuth } from "@/lib/permissions";
 import { PageHeader } from "@/components/page-header";
 import { TableRowsSkeleton } from "@/components/ui/table-skeleton";
+import { QueryError } from "@/components/query-error";
 import { StudentFormDialog } from "@/components/students/student-form-dialog";
-import { StudentBulkUploadDialog } from "@/components/students/student-bulk-upload-dialog";
+import dynamic from "next/dynamic";
 import { StudentRow } from "@/components/students/student-row";
+
+// ~640 lines of CSV parsing/validation only needed once the dialog opens —
+// split out of the page bundle.
+const StudentBulkUploadDialog = dynamic(() =>
+  import("@/components/students/student-bulk-upload-dialog").then(
+    (m) => m.StudentBulkUploadDialog,
+  ),
+);
 
 const PAGE_SIZE = 25;
 const ALL = "all";
@@ -100,7 +109,7 @@ export default function StudentsPage() {
 
   // Search, filters, sort and paging all execute in the database — the page
   // only ever holds the rows it renders.
-  const { data, isLoading, isFetching, isPlaceholderData } = useStudents({
+  const { data, isLoading, isFetching, isPlaceholderData, error, refetch } = useStudents({
     search: debouncedSearch || undefined,
     departmentId: deptFilter === ALL ? undefined : deptFilter,
     programId: program === ALL ? undefined : program,
@@ -398,6 +407,16 @@ export default function StudentsPage() {
           <TableBody>
             {isLoading ? (
               <TableRowsSkeleton rows={8} cols={6} />
+            ) : error && pageItems.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <QueryError
+                    error={error}
+                    onRetry={() => void refetch()}
+                    className="flex flex-col items-center gap-2 py-8 text-center"
+                  />
+                </TableCell>
+              </TableRow>
             ) : pageItems.length === 0 ? (
               <TableRow>
                 <TableCell

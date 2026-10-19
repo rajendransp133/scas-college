@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Read-only token: nothing here writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -35,10 +39,62 @@ jobs:
             pip install -r requirements.txt
           fi
 
+      # Undefined names and unused imports only (the `F` rules) — the class of
+      # mistake a refactor leaves behind. Model files use string forward
+      # references for relationships, which F821 can't resolve.
+      - name: Lint (ruff)
+        run: |
+          pip install ruff==0.8.4
+          ruff check --select F --per-file-ignores "models/*.py:F821" --exclude alembic .
+
       # testcontainers needs Docker, which ubuntu-latest runners provide
       # natively — no extra service setup required.
       - name: Run pytest
         run: pytest
+
+  # The migration chain, checked on a real Postgres: exactly one head, every
+  # migration reversible, and the models in sync with what the migrations build.
+  # pytest only ever runs `upgrade head`, so a broken downgrade or a model
+  # change without a migration would otherwise ship unnoticed.
+  migrations:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend-erp-fastapi
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:ci@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend-erp-fastapi/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Single head
+        run: test "$(python -m alembic heads | wc -l)" -eq 1
+
+      - name: Upgrade → downgrade one → upgrade
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade -1
+          python -m alembic upgrade head
+
+      - name: Models match migrations
+        run: python -m alembic check
 
   frontend:
     runs-on: ubuntu-latest

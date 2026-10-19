@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.assignments as svc
 from database.connection import get_db
-from deps import get_current_user, require_capability
+from deps import current_term_id, get_current_user, require_capability
 from models import User
 from schemas.Assignment import AssignmentCreate, AssignmentResponse
 
@@ -21,7 +21,9 @@ async def list_assignments(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    return await svc.list_assignments(db, term_id)
+    """One term's assignments — the current term unless `termId` says otherwise.
+    Unfiltered, this grew by a whole college's staffing every term."""
+    return await svc.list_assignments(db, term_id or await current_term_id(db))
 
 
 @router.post("", response_model=AssignmentResponse, status_code=status.HTTP_201_CREATED)

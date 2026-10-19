@@ -11,10 +11,19 @@
 #   docker compose run --rm seed      # first deploy only — real college + accounts
 #   docker compose up -d
 
+# Bounded container logs for every long-running service — the default
+# json-file driver keeps them forever and eventually fills the disk.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -31,13 +40,46 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot logical backup: pg_dump (custom format, compressed) → ./backups on
+  # the host. Profile-gated so it never runs on a normal `up` — invoke it from a
+  # host cron with `docker compose run --rm backup` (see DEPLOY.md "Backups").
+  # Same postgres:16 image as the server so pg_dump matches the server version.
+  backup:
+    image: postgres:16
+    profiles: ["backup"]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGDATABASE: ${POSTGRES_DB}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      # Keep this many most-recent dumps; older ones are pruned each run.
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        ts=$$(date +%Y%m%d-%H%M%S)
+        out="/backups/scas-$${ts}.dump"
+        pg_dump -Fc -f "$${out}"
+        echo "wrote $${out}"
+        ls -1t /backups/*.dump 2>/dev/null | tail -n +$$((BACKUP_KEEP + 1)) | xargs -r rm -f
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *logging
     # Pure cache + rate-limit store (services/cache.py, rate_limit.py) — a
     # cold cache and a reset rate-limit window on restart are both fine, so
-    # AOF persistence is disabled to avoid the disk I/O it would cost.
-    command: redis-server --appendonly no
+    # AOF persistence is disabled to avoid the disk I/O it would cost. Memory
+    # is capped with LRU eviction so it can never grow until the host OOMs;
+    # every key is a cache entry or a short rate-limit window, safe to evict.
+    command: redis-server --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -87,6 +129,9 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Documented in DEPLOY.md but never passed through before, so it was
+      # silently ignored and the principal always got a random password.
+      PRINCIPAL_PASSWORD: ${PRINCIPAL_PASSWORD:-}
       CREDENTIALS_FILE: /out/seed_credentials.csv
     volumes:
       - ./:/out
@@ -99,6 +144,7 @@ services:
       context: ./backend-erp-fastapi
     image: scas-erp-api:latest
     restart: unless-stopped
+    logging: *logging
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
@@ -116,6 +162,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Readiness (DB + Redis reachable), not liveness — a container that can't
+    # reach Postgres reports unhealthy and stays out of rotation. Probed with
+    # stdlib urllib so the image needs no curl; a 503 raises HTTPError → exit 1.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=4)\""
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     # No `ports:` — not published to the host. Only Caddy is internet-facing;
     # everything else reaches this over the compose network as `api:8000`.
     expose:
@@ -132,10 +189,24 @@ services:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     image: scas-erp-web:latest
     restart: unless-stopped
+    logging: *logging
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    # The standalone server answers `/` once it can serve pages; node 18+ has
+    # fetch built in, so no curl is needed in the image.
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     # No `ports:` — reached over the compose network as `web:3000`, only via
     # Caddy.
     expose:
@@ -144,6 +215,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       # Templated into the Caddyfile ({$DOMAIN}) — see Caddyfile's own
       # comment for the local-testing (no real domain) alternative.
@@ -155,9 +227,12 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    # Start routing only once both upstreams are actually serving.
     depends_on:
-      - api
-      - web
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
 
 volumes:
   postgres_data:

@@ -21,8 +21,9 @@ class AttendanceRecord(Base, Repr):
     __tablename__ = "attendance_record"
     __table_args__ = (
         UniqueConstraint("session_id", "student_id", name="uq_record_session_student"),
-        # Attendance aggregation (attended/held per student) reads only these
-        # three columns — a covering index turns it into an index-only scan.
+        # Attendance aggregation joins records to sessions through this index.
+        # Not covering: every tally also reads `original_status` (the
+        # as-marked figure), so each matching row still costs a heap fetch.
         Index(
             "ix_record_session_student_status", "session_id", "student_id", "status"
         ),
@@ -38,12 +39,12 @@ class AttendanceRecord(Base, Repr):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(
+        # No single-column index: uq_record_session_student leads with it.
         ForeignKey("attendance_session.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     student_id: Mapped[str] = mapped_column(
-        ForeignKey("student.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("student.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[AttendanceStatusEnum] = mapped_column(
         str_enum(AttendanceStatusEnum, "attendance_status_enum"), nullable=False

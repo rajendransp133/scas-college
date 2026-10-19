@@ -226,6 +226,12 @@ export interface User {
   /** Foreign key → Program.id */
   programId?: ID
   classSemester?: number
+  /**
+   * Soft-disable flag. A departing/suspended account is deactivated (its login
+   * is rejected server-side) rather than deleted, so its audit-actor links
+   * survive. Always present on responses; omitted on create (defaults active).
+   */
+  isActive?: boolean
 }
 
 export type AttendanceStatus = "present" | "absent" | "late" | "od"

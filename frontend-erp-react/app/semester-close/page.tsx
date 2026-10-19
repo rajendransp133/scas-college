@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { useQueries } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowRight, Circle, CircleCheck } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
@@ -13,13 +14,13 @@ import {
   useCourses,
   useDashboardStats,
   useSettings,
-  useStudents,
   useTerms,
 } from "@/lib/queries";
 import { useAuth } from "@/lib/permissions";
-import { EMPTY_ARRAY } from "@/lib/api";
+import { apiGet, EMPTY_ARRAY, qs, type Page } from "@/lib/api";
+import { qk } from "@/lib/queries/keys";
 import { DEFAULT_MIN_ATTENDANCE } from "@/lib/attendance";
-import { semesterInSession } from "@/lib/types";
+import { semesterInSession, type Student } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export default function SemesterClosePage() {
@@ -29,7 +30,24 @@ export default function SemesterClosePage() {
   const { data: settings } = useSettings();
   const currentTermId = settings?.currentTermId ?? "";
   const lockDate = settings?.lockDate ?? null;
-  const { data: assignments = EMPTY_ARRAY } = useAssignments();
+
+  // The term after the current one, chronologically (odd precedes even within
+  // an academic year). It used to be "any other term with no assignments",
+  // which by definition had nothing staffed — so step 5 could never complete,
+  // and it could pick an old, abandoned term instead of the next one.
+  const nextTerm = useMemo(() => {
+    const ordered = [...terms].sort(
+      (a, b) =>
+        a.startYear - b.startYear ||
+        (a.parity === b.parity ? 0 : a.parity === "odd" ? -1 : 1),
+    );
+    const i = ordered.findIndex((t) => t.id === currentTermId);
+    return i >= 0 ? (ordered[i + 1] ?? null) : null;
+  }, [terms, currentTermId]);
+  const { data: nextTermAssignments = EMPTY_ARRAY } = useAssignments(
+    nextTerm?.id,
+    !!nextTerm,
+  );
 
   // Session counts + the shortfall figure come from the aggregate endpoint —
   // this checklist used to derive them from every session in the database.
@@ -57,15 +75,24 @@ export default function SemesterClosePage() {
     }
     return map;
   }, [courses]);
-  const finalSemesters = useMemo(
-    () => [...new Set(Object.values(maxSemByProgram))].filter((n) => n > 0),
-    [maxSemByProgram],
-  );
-  const { data: finalSemPage } = useStudents({
-    status: "active",
-    semesters: finalSemesters,
-    pageSize: 1,
+  // Counted per program: one program's final semester is another's middle one.
+  // A single `semesters: [6, 8]` filter across the college counted a student in
+  // sem 6 of an 8-semester program as "ready to graduate".
+  const finalSemQueries = useQueries({
+    queries: Object.entries(maxSemByProgram)
+      .filter(([, sem]) => sem > 0)
+      .map(([programId, semester]) => {
+        const filters = { programId, semester, status: "active" as const, pageSize: 1 };
+        return {
+          queryKey: qk.students(filters),
+          queryFn: () => apiGet<Page<Student>>(`/students${qs({ ...filters })}`),
+        };
+      }),
   });
+  const finalSemStudents = finalSemQueries.reduce(
+    (n, q) => n + (q.data?.total ?? 0),
+    0,
+  );
 
   const currentTerm = terms.find((t) => t.id === currentTermId);
   const canFreeze = can.lockAttendance;
@@ -86,28 +113,19 @@ export default function SemesterClosePage() {
     // students who left or graduated).
     const shortfall = stats?.shortfall ?? 0;
 
-    // 4 — cohorts sitting in their program's final semester.
-    const finalSemStudents = finalSemPage?.total ?? 0;
-
-    // 5 — a fresh term exists and is being staffed.
-    // A term is "upcoming" while nothing has been assigned or marked in it.
-    const staffedTermIds = new Set(assignments.map((a) => a.termId));
-    const nextTerm = terms.find(
-      (t) => t.id !== currentTermId && !staffedTermIds.has(t.id),
+    // 5 — the next term exists and is being staffed. The target counts only
+    // courses of semesters in session for *that* term's odd/even parity.
+    const inSessionNext = new Set(
+      courses
+        .filter((c) => nextTerm && semesterInSession(c.semesterNumber, nextTerm))
+        .map((c) => c.id),
     );
-    // Staffing target for the next term: only courses of semesters that will
-    // be in session for that term's odd/even parity.
-    const totalCourses = courses.reduce(
-      (n, c) => (semesterInSession(c.semesterNumber, nextTerm) ? n + 1 : n),
-      0,
-    );
-    const nextTermStaffed = nextTerm
-      ? new Set(
-          assignments
-            .filter((a) => a.termId === nextTerm.id)
-            .map((a) => a.courseId),
-        ).size
-      : 0;
+    const totalCourses = inSessionNext.size;
+    const nextTermStaffed = new Set(
+      nextTermAssignments
+        .map((a) => a.courseId)
+        .filter((id) => inSessionNext.has(id)),
+    ).size;
 
     const list: {
       title: string;
@@ -180,11 +198,10 @@ export default function SemesterClosePage() {
     lockDate,
     canFreeze,
     stats,
-    finalSemPage,
+    finalSemStudents,
     courses,
-    terms,
-    currentTermId,
-    assignments,
+    nextTerm,
+    nextTermAssignments,
   ]);
 
   // Belt-and-braces: AuthGate already blocks disallowed roles. The checklist is

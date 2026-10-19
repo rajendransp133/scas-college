@@ -5,7 +5,7 @@
 // pages read capability flags from useAuth() instead of checking roles inline.
 
 import { useMemo } from "react"
-import { useAssignments, useMe, useTeacher } from "@/lib/queries"
+import { useAssignments, useMe, useSettings, useTeacher } from "@/lib/queries"
 import { EMPTY_ARRAY } from "@/lib/api"
 import type { Teacher, User, UserRole } from "@/lib/types"
 
@@ -14,6 +14,13 @@ export interface Capabilities {
   manageUsers: boolean
   /** CRUD on departments, programs, students, teachers, promotions, assignments. */
   manageAcademics: boolean
+  /**
+   * May read a student's *personal* fields (contact, address, DOB, guardian) —
+   * distinct from which students are in reach at all. Held by admin/principal/hod;
+   * a teacher or class-rep sees the roster (roll + name + status) with these
+   * blanked server-side. UI copy: hide the PII columns/cards when this is false.
+   */
+  viewStudentPii: boolean
   /**
    * Who may create a new attendance session: any course ("all"), only courses
    * assigned to the account's linked teacher ("own" — first-time only unless
@@ -45,6 +52,7 @@ export interface Capabilities {
 const NONE: Capabilities = {
   manageUsers: false,
   manageAcademics: false,
+  viewStudentPii: false,
   markScope: "none",
   editAttendance: false,
   deleteAttendance: false,
@@ -59,6 +67,7 @@ const CAPABILITIES: Record<UserRole, Capabilities> = {
   admin: {
     manageUsers: true,
     manageAcademics: true,
+    viewStudentPii: true,
     markScope: "all",
     editAttendance: true,
     deleteAttendance: true,
@@ -82,6 +91,7 @@ const CAPABILITIES: Record<UserRole, Capabilities> = {
   principal: {
     manageUsers: true,
     manageAcademics: true,
+    viewStudentPii: true,
     markScope: "all",
     editAttendance: false,
     deleteAttendance: false,
@@ -107,6 +117,7 @@ const CAPABILITIES: Record<UserRole, Capabilities> = {
   // assigned courses, but everything else stays view-only, dept-scoped.
   hod: {
     ...NONE,
+    viewStudentPii: true,
     markScope: "own",
     materialScope: "own",
   },
@@ -217,7 +228,8 @@ export interface Auth {
   /** Student rep's class (program + semester). Null for other roles. */
   classScope: { programId: string; semester: number } | null
   can: Capabilities
-  /** Course ids assigned to the account's linked teacher for a term. Empty when unlinked. */
+  /** Course ids assigned to the account's linked teacher for a term. Empty when
+   * unlinked. Only the current term is loaded, so other terms read as empty. */
   ownCourseIds: (termId: string) => Set<string>
 }
 
@@ -228,7 +240,14 @@ export function useAuth(): Auth {
   const { data: me } = useMe()
   const user = me?.user ?? null
   const { data: teacher = null } = useTeacher(user?.teacherId)
-  const { data: assignments = EMPTY_ARRAY } = useAssignments()
+  // Own courses only matter for an account with a linked teacher, and every
+  // caller asks about the current term — so that is all this loads (it used to
+  // fetch every term's assignments for every role, admins and reps included).
+  const { data: settings } = useSettings()
+  const { data: assignments = EMPTY_ARRAY } = useAssignments(
+    settings?.currentTermId,
+    !!user?.teacherId && !!settings?.currentTermId,
+  )
 
   return useMemo(() => {
     const role = user?.role ?? null

@@ -2,7 +2,16 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { MoreHorizontal, Pencil, Plus, Search, Trash2, Users } from "lucide-react";
+import {
+  Ban,
+  CheckCircle2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Users,
+} from "lucide-react";
 import {
   Table,
   TableBody,
@@ -38,6 +47,7 @@ import {
   useDeleteUser,
   usePrograms,
   useTeacherOptions,
+  useToggleUserActive,
   useUsers,
   type UserResponse,
 } from "@/lib/queries";
@@ -47,6 +57,7 @@ import { usePagination } from "@/hooks/use-pagination";
 import { PageHeader } from "@/components/page-header";
 import { TableRowsSkeleton } from "@/components/ui/table-skeleton";
 import { UserFormDialog } from "@/components/users/user-form-dialog";
+import { QueryError } from "@/components/query-error";
 
 const PAGE_SIZE = 25;
 
@@ -54,6 +65,7 @@ export default function UsersPage() {
   const { data: teachers = EMPTY_ARRAY } = useTeacherOptions();
   const { data: programs = EMPTY_ARRAY } = usePrograms();
   const deleteUser = useDeleteUser();
+  const toggleActive = useToggleUserActive();
   const { can, role, user: currentUser } = useAuth();
   const currentUserId = currentUser?.id ?? null;
 
@@ -62,6 +74,18 @@ export default function UsersPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<UserResponse | null>(null);
   const [deleting, setDeleting] = useState<UserResponse | null>(null);
+  // Disabling signs the account out everywhere (the server revokes its tokens),
+  // so it is confirmed like a delete; re-enabling is harmless and immediate.
+  const [disabling, setDisabling] = useState<UserResponse | null>(null);
+
+  async function setActive(u: UserResponse, isActive: boolean) {
+    try {
+      await toggleActive.mutateAsync({ id: u.id, isActive });
+      toast.success(isActive ? `Enabled "${u.name}".` : `Disabled "${u.name}".`);
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  }
 
   // The input stays instant; only the request waits.
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
@@ -69,7 +93,7 @@ export default function UsersPage() {
     JSON.stringify([debouncedSearch, roleFilter]),
   );
 
-  const { data, isLoading, isFetching, isPlaceholderData } = useUsers({
+  const { data, isLoading, isFetching, isPlaceholderData, error, refetch } = useUsers({
     search: debouncedSearch || undefined,
     role: (roleFilter || undefined) as UserRole | undefined,
     page,
@@ -162,7 +186,18 @@ export default function UsersPage() {
           </TableHeader>
           <TableBody>
             {isLoading && <TableRowsSkeleton rows={6} cols={5} />}
-            {!isLoading && users.length === 0 && (
+            {!isLoading && error && (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <QueryError
+                    error={error}
+                    onRetry={() => void refetch()}
+                    className="flex flex-col items-center gap-2 py-8 text-center"
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+            {!isLoading && !error && users.length === 0 && (
               <TableRow>
                 <TableCell
                   colSpan={5}
@@ -178,12 +213,17 @@ export default function UsersPage() {
               // refuses either way, so don't offer the buttons.
               const editable = canManageRole(role, u.role);
               return (
-              <TableRow key={u.id}>
+              <TableRow key={u.id} className={u.isActive === false ? "opacity-60" : undefined}>
                 <TableCell data-label="Name" className="font-medium">
                   {u.name}
                   {u.id === currentUserId ? (
                     <Badge variant="outline" className="ml-2">
                       You
+                    </Badge>
+                  ) : null}
+                  {u.isActive === false ? (
+                    <Badge variant="secondary" className="ml-2">
+                      Disabled
                     </Badge>
                   ) : null}
                 </TableCell>
@@ -217,6 +257,31 @@ export default function UsersPage() {
                         <DropdownMenuItem onClick={() => setEditing(u)}>
                           <Pencil size={16} />
                           Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          // Only this row waits on its own toggle.
+                          disabled={
+                            u.id === currentUserId ||
+                            (toggleActive.isPending &&
+                              toggleActive.variables?.id === u.id)
+                          }
+                          onClick={() =>
+                            u.isActive === false
+                              ? void setActive(u, true)
+                              : setDisabling(u)
+                          }
+                        >
+                          {u.isActive === false ? (
+                            <>
+                              <CheckCircle2 size={16} />
+                              Enable
+                            </>
+                          ) : (
+                            <>
+                              <Ban size={16} />
+                              Disable
+                            </>
+                          )}
                         </DropdownMenuItem>
                         <DropdownMenuItem
                           variant="destructive"
@@ -272,6 +337,36 @@ export default function UsersPage() {
         onOpenChange={(o) => !o && setEditing(null)}
         user={editing ?? undefined}
       />
+
+      <AlertDialog
+        open={Boolean(disabling)}
+        onOpenChange={(o) => !o && setDisabling(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <strong>{disabling?.name}</strong> ({disabling?.email}) will be
+              signed out on every device and can&apos;t log in until the account
+              is enabled again. Their records and audit history are kept.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              loading={toggleActive.isPending}
+              onClick={async () => {
+                if (!disabling) return;
+                await setActive(disabling, false);
+                setDisabling(null);
+              }}
+            >
+              Disable
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={Boolean(deleting)}

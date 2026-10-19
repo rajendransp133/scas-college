@@ -59,6 +59,6 @@ async def update_department(
 async def delete_department(
     dept_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    user: User = Depends(_academics),
 ):
-    await svc.delete_department(db, dept_id)
+    await svc.delete_department(db, user, dept_id)

@@ -153,11 +153,17 @@ architecture"; frontend: same section name) — this is the map:
   both sides (`NEXT_PUBLIC_SENTRY_DSN` — empty disables it), plus `output: "standalone"` for the
   Docker image.
 - **Tests + CI**: `backend-erp-fastapi/tests/` (pytest + testcontainers, a real ephemeral
-  Postgres per run, 102 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
-  uniqueness, per-role read scoping, and the self-demotion lockout.
-  `frontend-erp-react/lib/*.test.ts` (Vitest + Testing Library, 46 tests) covers the attendance
-  tally/pct math and the permission matrix. `.github/workflows/ci.yml` (repo root) runs both, plus
-  lint/typecheck/build, on every push/PR.
+  Postgres per run, 144 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
+  uniqueness, per-role read and write scoping, constraint races, and the self-demotion lockout.
+  `frontend-erp-react/lib/*.test.ts` (Vitest + Testing Library, 57 tests) covers the attendance
+  tally/pct math, the permission matrix, the 401/token-rotation handling and CSV export.
+  `.github/workflows/ci.yml` (repo root) runs both, plus lint/typecheck/build, ruff, and a
+  `migrations` job (single Alembic head, upgrade→downgrade→upgrade, `alembic check` for drift),
+  on every push/PR.
+- **Integrity at the boundary** (backend CLAUDE.md, same heading): every write commits through
+  `commit_or_raise` (constraint → 409/422, never a 500); deletes that cascade into attendance are
+  audited and lock-guarded; one rep per class is a DB unique index; cached values are plain JSON
+  and never mutated by callers.
 - **Load validation**: `k6/` has scripts against the four hot paths (login, student search,
   attendance summary, attendance marking) with a concrete pass bar — see `k6/README.md`.
 
@@ -172,7 +178,7 @@ npx tsc --noEmit       # fast typecheck; npm run build also typechecks
 
 # Backend
 cd backend-erp-fastapi
-# deps live in the checked-in venv (no requirements.txt yet — see backend CLAUDE.md)
+# deps: pip install -r requirements.txt (+ requirements-dev.txt for tests) — see backend CLAUDE.md
 attadance_system\Scripts\Activate.ps1
 uvicorn main:app --reload    # or: fastapi dev main.py
 alembic upgrade head

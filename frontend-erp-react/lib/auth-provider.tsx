@@ -31,6 +31,13 @@ interface AuthContextValue {
   initialized: boolean
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  /**
+   * Swap in a freshly-minted token without re-logging-in. Used after a password
+   * change: the server rotates the account's token epoch (revoking every other
+   * session) and hands back a new token for this device, which we store here so
+   * the current session survives the rotation.
+   */
+  replaceToken: (token: string) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -70,6 +77,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient],
   )
 
+  const replaceToken = useCallback((next: string) => {
+    setToken(next)
+    setTok(next)
+  }, [])
+
   const logout = useCallback(async () => {
     try {
       await apiPost("/auth/logout")
@@ -82,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient])
 
   return (
-    <AuthContext.Provider value={{ token, initialized, login, logout }}>
+    <AuthContext.Provider value={{ token, initialized, login, logout, replaceToken }}>
       {children}
     </AuthContext.Provider>
   )

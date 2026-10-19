@@ -26,10 +26,10 @@ class AttendanceSession(Base, Repr):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     course_id: Mapped[str] = mapped_column(
-        ForeignKey("course.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("course.id", ondelete="CASCADE"), nullable=False
     )
     term_id: Mapped[str] = mapped_column(
-        ForeignKey("academic_term.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("academic_term.id", ondelete="RESTRICT"), nullable=False
     )
     date: Mapped[str] = mapped_column(String(10), nullable=False)  # ISO yyyy-mm-dd
     period: Mapped[int] = mapped_column(Integer, nullable=False)

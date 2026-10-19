@@ -46,9 +46,23 @@ export default function MaterialsPage() {
   const { user, role, can, classScope, departmentId, ownCourseIds } = useAuth();
   const { data: programs = EMPTY_ARRAY } = usePrograms();
   const { data: courses = EMPTY_ARRAY } = useCourses();
-  // Paginated server-side; a generous page keeps the grouped-by-course layout
-  // intact. Rows are just link metadata, so they stay small.
-  const { data: materialPage, isLoading } = useMaterials({ pageSize: 200 });
+  // Admin/principal browse filters (other roles are scoped automatically).
+  const [programId, setProgramId] = useState("");
+  const [semesterId, setSemesterId] = useState("");
+  const semesterNumber = useMemo(
+    () => courses.find((c) => c.semesterId === semesterId)?.semesterNumber,
+    [courses, semesterId],
+  );
+
+  // Paginated and scoped server-side; a generous page keeps the
+  // grouped-by-course layout intact. The program/semester filter is sent to the
+  // server rather than applied to one fetched page, which silently dropped
+  // anything past the first 200 materials college-wide.
+  const { data: materialPage, isLoading } = useMaterials({
+    pageSize: 200,
+    programId: programId || undefined,
+    semester: semesterNumber,
+  });
   const materials = useMemo(() => materialPage?.items ?? [], [materialPage]);
   const { data: terms = EMPTY_ARRAY } = useTerms();
   // The directory is id→name for any authenticated user, so the uploader name
@@ -57,10 +71,6 @@ export default function MaterialsPage() {
   const { data: settings } = useSettings();
   const currentTermId = settings?.currentTermId ?? "";
   const deleteMaterial = useDeleteMaterial();
-
-  // Admin/principal browse filters (other roles are scoped automatically).
-  const [programId, setProgramId] = useState("");
-  const [semesterId, setSemesterId] = useState("");
   /** Share dialog: null = closed, "" = open without a preselected course. */
   const [uploadCourse, setUploadCourse] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<StudyMaterial | null>(null);

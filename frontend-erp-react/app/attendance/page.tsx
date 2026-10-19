@@ -45,6 +45,7 @@ import {
   tally,
 } from "@/lib/attendance";
 import { cn } from "@/lib/utils";
+import { todayLocal } from "@/lib/date";
 import {
   semesterInSession,
   type AttendanceSession,
@@ -52,7 +53,6 @@ import {
   type Student,
 } from "@/lib/types";
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
 
 // Stable empty defaults. A `= []` literal allocates a fresh array on every
 // render while a query is disabled/pending, which defeats memoisation and — in
@@ -83,16 +83,27 @@ export default function AttendancePage() {
   const [semesterId, setSemesterId] = useState("");
   const [courseId, setCourseId] = useState("");
   const [period, setPeriod] = useState(1);
-  const [date, setDate] = useState(todayISO);
+  const [date, setDate] = useState(todayLocal);
   const [statuses, setStatuses] = useState<Record<string, AttendanceStatus>>({});
 
   // Semesters (with courses) for the selected program; sessions for the course.
   const { data: semesters = EMPTY_ARRAY } = useSemesters(programId);
   // Sessions for this course in the current term — bounded by the class, so
   // it comes back whole. (This page is term-scoped like every other.)
-  const { data: courseSessionsRaw = NO_SESSIONS } = useRegister(
+  const { data: registerData = NO_SESSIONS, isPlaceholderData: registerStale } = useRegister(
     { courseId, termId: currentTermId },
     !!courseId,
+  );
+  // `useRegister` keeps the previous course's sessions on screen while the new
+  // course loads. Those must never back this sheet: a stale match for the same
+  // date/period flipped Save into "edit" mode and re-seeded the taps from
+  // another class. Only sessions of the selected course count.
+  const courseSessionsRaw = useMemo(
+    () =>
+      registerData.every((s) => s.courseId === courseId)
+        ? registerData
+        : NO_SESSIONS,
+    [registerData, courseId],
   );
   // The roster is the server's derived class list: active, non-graduated
   // students in the course's program and semester.
@@ -242,8 +253,12 @@ export default function AttendancePage() {
   // guard, and overrideLock roles can still write through it (audited).
   const dateLocked = lockDate != null && date <= lockDate;
   const lockBlocks = dateLocked && !can.overrideLock;
+  // Not while the register still shows another course: whether this is a
+  // first mark or a correction isn't known yet.
   const canSave =
-    !lockBlocks && (existingSession ? can.editAttendance : canMarkHere);
+    !registerStale &&
+    !lockBlocks &&
+    (existingSession ? can.editAttendance : canMarkHere);
   const markLocked =
     canMarkHere && Boolean(existingSession) && !can.editAttendance;
 
@@ -341,7 +356,7 @@ export default function AttendancePage() {
             setProgramId(c.programId);
             setSemesterId(c.semesterId);
             setCourseId(c.courseId);
-            setDate(todayISO());
+            setDate(todayLocal());
           }}
         />
       )}
@@ -416,7 +431,7 @@ export default function AttendancePage() {
             id="att-date"
             type="date"
             value={date}
-            max={todayISO()}
+            max={todayLocal()}
             onChange={(e) => setDate(e.target.value)}
           />
         </div>

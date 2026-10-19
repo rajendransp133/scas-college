@@ -12,6 +12,9 @@ python-jose[cryptography]==3.5.0
 bcrypt==5.0.0
 python-multipart
 email-validator==2.3.0
+# IANA zone data for zoneinfo (services/util.py::today_local) — Windows and
+# slim images ship none of their own.
+tzdata==2026.2
 
 # --- production/scaling additions ---
 gunicorn==23.0.0

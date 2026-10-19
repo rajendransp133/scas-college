@@ -94,9 +94,19 @@ http.interceptors.response.use(
       )
     }
     const status = (error as AxiosError).response?.status ?? 0
-    if (status === 401) {
-      clearToken()
-      onUnauthorized?.()
+    // A 401 from the login call is a wrong password, not an expired session —
+    // fall through so the server's "Invalid email or password" reaches the form.
+    const isLogin = error.config?.url?.startsWith("/auth/login") ?? false
+    if (status === 401 && !isLogin) {
+      // Drop the session only if the rejected request carried the token we
+      // still hold. A request in flight when the token rotated (password
+      // change) 401s on the *old* token and must not wipe the new one.
+      const sent = error.config?.headers?.get?.("Authorization")
+      const current = getToken()
+      if (!current || sent === `Bearer ${current}`) {
+        clearToken()
+        onUnauthorized?.()
+      }
       return Promise.reject(
         new ApiError(401, "Your session has expired. Please sign in again."),
       )
@@ -138,15 +148,6 @@ export const apiPatch = <T>(path: string, json?: unknown) =>
 
 export const apiDelete = <T = void>(path: string) =>
   request<T>({ method: "DELETE", url: path })
-
-/** Multipart upload (axios sets the multipart boundary Content-Type). */
-export const apiUpload = <T>(path: string, form: FormData) =>
-  request<T>({ method: "POST", url: path, data: form })
-
-/** Fetch a binary blob (study-material download), with auth + 401 handling. */
-export async function apiDownload(path: string): Promise<Blob> {
-  return request<Blob>({ method: "GET", url: path, responseType: "blob" })
-}
 
 /** Human-readable message for a caught error — the ApiError detail, or a fallback. */
 export function errMsg(err: unknown, fallback = "Something went wrong."): string {

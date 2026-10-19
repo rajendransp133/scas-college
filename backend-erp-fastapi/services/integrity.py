@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import or_, select
+from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from enums.AuditAction import AuditActionEnum
 from models import AppSettings, AuditEntry, User
@@ -53,7 +54,7 @@ async def set_lock_date(
     await db.commit()
     # The lock guard reads this on every attendance write — drop the cached
     # copy immediately rather than waiting out the TTL.
-    invalidate(cache_keys.SETTINGS)
+    await invalidate(cache_keys.SETTINGS)
     return date
 
 
@@ -66,22 +67,30 @@ async def list_audit(
     student_id: Optional[str] = None,
     course_id: Optional[str] = None,
 ) -> tuple[list[AuditEntry], int]:
-    stmt = select(AuditEntry)
-    if term_id:
-        # Lock/unlock entries carry no termId and must stay visible in every
-        # term — the freeze applies to the whole college, not one term.
-        stmt = stmt.where(
-            or_(AuditEntry.term_id == term_id, AuditEntry.term_id.is_(None))
-        )
+    filters = []
     if action:
-        stmt = stmt.where(AuditEntry.action == action)
+        filters.append(AuditEntry.action == action)
     if user_id:
-        stmt = stmt.where(AuditEntry.user_id == user_id)
+        filters.append(AuditEntry.user_id == user_id)
     if student_id:
-        stmt = stmt.where(AuditEntry.student_id == student_id)
+        filters.append(AuditEntry.student_id == student_id)
     if course_id:
-        stmt = stmt.where(AuditEntry.course_id == course_id)
-    stmt = stmt.order_by(AuditEntry.at.desc())
+        filters.append(AuditEntry.course_id == course_id)
+
+    if not term_id:
+        stmt = select(AuditEntry).where(*filters).order_by(AuditEntry.at.desc())
+    else:
+        # Entries with no termId (lock/unlock, cascade deletes) concern the
+        # whole college and stay visible in every term. Written as UNION ALL
+        # rather than `term_id = X OR term_id IS NULL`: each branch is an
+        # ordered scan of ix_audit_term_at, which Postgres can merge and stop
+        # at the page limit; the OR form bitmap-scans the term and sorts it.
+        branches = union_all(
+            select(AuditEntry).where(AuditEntry.term_id == term_id, *filters),
+            select(AuditEntry).where(AuditEntry.term_id.is_(None), *filters),
+        ).subquery()
+        entry = aliased(AuditEntry, branches)
+        stmt = select(entry).order_by(entry.at.desc())
     items, total = await paginate(db, stmt, params)
     return list(items), total
 

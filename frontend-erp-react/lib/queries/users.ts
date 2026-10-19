@@ -75,3 +75,17 @@ export function useDeleteUser() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
   })
 }
+
+/**
+ * Enable/disable an account without deleting it. A disabled login is rejected
+ * server-side and its outstanding token is revoked (the backend bumps the
+ * account's token epoch on disable). Goes through the same PUT as edits.
+ */
+export function useToggleUserActive() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiPut<UserResponse>(`/users/${id}`, { isActive }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  })
+}

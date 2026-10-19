@@ -38,9 +38,9 @@ async def add_semester(
 async def delete_semester(
     semester_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    user: User = Depends(_academics),
 ):
-    await svc.delete_semester(db, semester_id)
+    await svc.delete_semester(db, user, semester_id)
 
 
 @router.post(
@@ -64,6 +64,6 @@ async def delete_course(
     semester_id: str,
     course_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    user: User = Depends(_academics),
 ):
-    await svc.delete_course(db, semester_id, course_id)
+    await svc.delete_course(db, user, semester_id, course_id)

@@ -113,7 +113,7 @@ export function useClassRoster(
   const { token } = useAuthSession()
   const { courseId, termId, month } = params
   return useQuery({
-    queryKey: ["roster", "class", courseId ?? "", termId ?? null, month ?? null] as const,
+    queryKey: qk.classRoster(courseId ?? "", termId, month),
     queryFn: () =>
       apiGet<Student[]>(
         `/attendance/class-roster${qs({
@@ -256,10 +256,16 @@ export function useRedFlags(termId?: string | null, enabled = true) {
 
 // --- mutations -------------------------------------------------------------
 
-function invalidateAttendance(qc: ReturnType<typeof useQueryClient>) {
+function invalidateAttendance(
+  qc: ReturnType<typeof useQueryClient>,
+  { keepRegister = false }: { keepRegister?: boolean } = {},
+) {
   // Sessions, register, summary, breakdown and red flags all live under
   // ["attendance"]; the audit log and dashboard counters move too.
-  qc.invalidateQueries({ queryKey: ["attendance"] })
+  qc.invalidateQueries({
+    queryKey: ["attendance"],
+    predicate: (q) => !(keepRegister && q.queryKey[1] === "register"),
+  })
   qc.invalidateQueries({ queryKey: ["audit"] })
   qc.invalidateQueries({ queryKey: ["stats"] })
   // Rosters key off ["roster", …], outside the ["attendance"] namespace, so a
@@ -305,7 +311,15 @@ export function useSetAttendanceStatus() {
         `/attendance/${sessionId}/records/${studentId}`,
         { status },
       ),
-    onSuccess: () => invalidateAttendance(qc),
+    // The PATCH returns the whole corrected session — write it straight into
+    // every cached register instead of refetching the matrix per click.
+    onSuccess: (session) => {
+      qc.setQueriesData<AttendanceSession[]>(
+        { queryKey: ["attendance", "register"] },
+        (old) => old?.map((s) => (s.id === session.id ? session : s)),
+      )
+      invalidateAttendance(qc, { keepRegister: true })
+    },
   })
 }
 

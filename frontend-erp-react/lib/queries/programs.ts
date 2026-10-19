@@ -46,6 +46,7 @@ export function useCreateProgram() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["programs"] })
       qc.invalidateQueries({ queryKey: qk.courses })
+      qc.invalidateQueries({ queryKey: ["stats"] })
     },
   })
 }

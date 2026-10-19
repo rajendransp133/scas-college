@@ -69,7 +69,7 @@ export function useStudentIds(
 export function useRollNumbers(enabled = true) {
   const { token } = useAuthSession()
   return useQuery({
-    queryKey: ["students", "roll-numbers"] as const,
+    queryKey: qk.rollNumbers,
     queryFn: () => apiGet<string[]>("/students/roll-numbers"),
     enabled: !!token && enabled,
     staleTime: STALE.standard,
@@ -93,7 +93,7 @@ export function useStudentLookup(ids: string[]) {
   const { token } = useAuthSession()
   const sorted = [...new Set(ids)].sort()
   return useQuery({
-    queryKey: ["students", "lookup", sorted] as const,
+    queryKey: qk.studentLookup(sorted),
     queryFn: () => apiGet<StudentRef[]>(`/students/lookup${qs({ ids: sorted })}`),
     enabled: !!token && sorted.length > 0,
     staleTime: STALE.reference,
@@ -115,7 +115,8 @@ export function useCreateStudent() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (input: StudentInput) => apiPost<Student>("/students", input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["students"] }),
+    // A new student joins a class roster and the dashboard counts.
+    onSuccess: () => invalidateRoster(qc),
   })
 }
 
@@ -125,7 +126,8 @@ export function useUpdateStudent() {
     // rollNumber is locked server-side on edit; sending it is harmless (ignored).
     mutationFn: ({ id, input }: { id: string; input: Partial<StudentInput> }) =>
       apiPut<Student>(`/students/${id}`, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["students"] }),
+    // Moving class or semester changes which roster the student is on.
+    onSuccess: () => invalidateRoster(qc),
   })
 }
 
@@ -135,9 +137,10 @@ export function useDeleteStudent() {
     mutationFn: (id: string) => apiDelete(`/students/${id}`),
     // Hard delete also strips the student's attendance records.
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["students"] })
+      invalidateRoster(qc)
       qc.invalidateQueries({ queryKey: ["attendance"] })
-      qc.invalidateQueries({ queryKey: ["stats"] })
+      // The server logs the removed records.
+      qc.invalidateQueries({ queryKey: ["audit"] })
     },
   })
 }

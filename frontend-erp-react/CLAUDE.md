@@ -115,7 +115,8 @@ components/
   users/user-form-dialog.tsx
 lib/
   types.ts                # domain types + constants (DESIGNATIONS, PROGRAM_LEVELS, Gender, USER_ROLES) + termLabel()/semesterInSession() — shapes the API already matches (camelCase)
-  api.ts                  # axios instance + interceptors: apiGet/Post/Put/Patch/Delete + apiUpload/apiDownload; ApiError; token storage; 401 handler; errMsg(); qs(); Page<T>
+  api.ts                  # axios instance + interceptors: apiGet/Post/Put/Patch/Delete; ApiError; token storage; 401 handler; errMsg(); qs(); Page<T>
+  date.ts                 # todayLocal() — the browser-local YYYY-MM-DD (never the UTC date)
   auth-provider.tsx       # AuthProvider: holds the JWT (localStorage), login()/logout(), initialized flag
   query-provider.tsx      # QueryClientProvider + shared QueryClient (STALE tiers, no retry on 4xx)
   queries/                # per-domain TanStack Query hooks (useStudents, useCreateStudent, …) + keys.ts factory + barrel index.ts
@@ -125,7 +126,6 @@ lib/
   utils.ts                # cn() helper (clsx + tailwind-merge)
   branding.ts             # college name/tagline/logo/website — the only place identity is hardcoded
 hooks/
-  use-course-lookup.ts    # global courseId → {name, code, programId, semesterNumber, program/dept names} map from useCourses()+usePrograms()+useDepartments()
   use-debounced-value.ts  # debounce a search box before it reaches a query (input stays instant)
   use-pagination.ts       # 1-based page that resets to 1 when a filter key changes, during render (not in an effect)
 ```
@@ -179,8 +179,10 @@ lets the affected queries invalidate. Responses are camelCase and already match 
 - **`lib/api.ts`** — a single **axios** instance (`http`) owns the cross-cutting HTTP concerns via
   interceptors: bearer-token injection, error normalisation to `ApiError { status, detail }`, and
   **401 clears the token and drops to the login screen**. `304` counts as success (`validateStatus`)
-  so the backend's ETag path works. Helpers `apiGet/apiPost/apiPut/apiPatch/apiDelete` resolve to the
-  response body; `apiUpload` (multipart) and `apiDownload` (blob) sit alongside. `errMsg(err)` → a
+  so the backend's ETag path works. A 401 drops the session only if the rejected request carried
+  the token still stored (so a password change's token rotation survives in-flight requests), and
+  never for `/auth/login`, whose 401 is a wrong password. Helpers
+  `apiGet/apiPost/apiPut/apiPatch/apiDelete` resolve to the response body. `errMsg(err)` → a
   toast string. `qs()` builds query strings, dropping empty values and repeating array keys
   (`?ids=a&ids=b`, which is what FastAPI expects). `Page<T>` is the shared paginated envelope.
 - **`lib/auth-provider.tsx`** — `useAuthSession()` gives `{ token, initialized, login, logout }`.
@@ -228,7 +230,12 @@ asks a question and renders the answer.
 - **`STALE` tiers** (`lib/query-provider.tsx`) pick a `staleTime` by how often data really changes:
   `static` (30 min — terms, courses, departments, directory), `reference` (5 min — programs,
   semesters, teachers), `standard` (1 min), `live` (15 s — attendance, audit, dashboard).
-  `refetchOnMount` is off; without it every mount refetched and navigation double-requested.
+  `refetchOnMount` stays at its default: it refetches on mount **only stale or invalidated**
+  data, so the tiers are what stop double-requesting. It was once set to `false`, which meant
+  a mutation's invalidation never reached a page that wasn't on screen — save attendance, open
+  the summary, see the old numbers. Mutations must invalidate every key they affect
+  (`["stats"]` and `["roster"]` are the easy ones to forget); a single-cell register PATCH writes
+  the returned session into the cache (`setQueriesData`) instead of refetching the matrix.
 
 ### Render rules
 
@@ -397,11 +404,17 @@ CLAUDE.md's map, for the other half):
   read at container start (Next.js inlines `NEXT_PUBLIC_*` into the client bundle when it
   compiles) — passed as Docker build args in `docker-compose.yml`. Changing either requires
   `docker compose build web` again, not just a restart; see the root `DEPLOY.md`.
-- **Tests**: Vitest + React Testing Library, unit/component scope (`lib/attendance.test.ts`,
-  `lib/permissions.test.ts` — the two files already documented above as the app's pure-logic
-  source of truth). No Playwright/e2e yet — deferred until there's a stable deployed stack to point
-  it at. `npm run test` (`vitest run`); `.github/workflows/ci.yml` (repo root) runs it alongside
+- **Tests**: Vitest + React Testing Library (`lib/*.test.ts`, 57 tests): attendance maths,
+  the permission matrix, `lib/api.ts`'s 401 handling (a rotated token survives an in-flight
+  401 on the old one; a wrong password is not "session expired"), CSV export (formula-injection
+  guard, BOM) and `lib/date.ts::todayLocal`. Playwright e2e lives in `tests/e2e/`
+  (`playwright.config.ts`; `.github/workflows/e2e.yml`, manually dispatched against the Docker
+  stack). `npm run test` (`vitest run`); `.github/workflows/ci.yml` (repo root) runs it alongside
   lint/typecheck/build on every push.
+- **"Today" is `lib/date.ts::todayLocal()`**, never `toISOString().slice(0, 10)` (the UTC date —
+  yesterday for IST until 05:30).
+- **A failed main query renders `components/query-error.tsx`**, not the empty state — a 403 or 500
+  shown as "No students match your filters" sends people hunting for missing data.
 
 ## Patterns to follow when extending
 

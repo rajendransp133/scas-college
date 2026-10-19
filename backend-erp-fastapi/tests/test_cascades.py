@@ -83,7 +83,6 @@ async def test_delete_department_cascades_whole_curriculum(
         headers=admin_headers,
     )
     assert att_r.status_code == 200, att_r.text
-    session_id = att_r.json()["id"]
 
     # Delete the department.
     del_r = await client.delete(f"/departments/{chain['dept']['id']}", headers=admin_headers)
@@ -208,7 +207,6 @@ async def test_delete_student_cascades_own_records_but_session_survives(
         headers=admin_headers,
     )
     assert att_r.status_code == 200, att_r.text
-    session_id = att_r.json()["id"]
 
     del_r = await client.delete(f"/students/{student_a['id']}", headers=admin_headers)
     assert del_r.status_code == 204

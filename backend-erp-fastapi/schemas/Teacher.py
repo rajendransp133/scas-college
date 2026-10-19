@@ -6,7 +6,7 @@ from typing import Annotated, Optional
 from pydantic import BeforeValidator, EmailStr, Field
 
 from enums.Designation import DesignationEnum
-from schemas.base import CamelModel
+from schemas.base import CamelModel, UpdateModel
 
 
 def _blank_to_none(v: object) -> object:
@@ -50,7 +50,11 @@ class TeacherCreate(TeacherBase):
     pass
 
 
-class TeacherUpdate(CamelModel):
+class TeacherUpdate(UpdateModel):
+    NOT_NULL = frozenset(
+        {"employee_id", "name", "department_id", "designation", "is_hod"}
+    )
+
     employee_id: Optional[str] = Field(None, min_length=1, max_length=40)
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     department_id: Optional[str] = None

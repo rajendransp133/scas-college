@@ -6,10 +6,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from deps import ensure_can_mark
 from enums.AuditAction import AuditActionEnum
 from ids import new_id
 from models import (
-    AppSettings,
     AttendanceRecord,
     AttendanceSession,
     Course,
@@ -17,13 +17,17 @@ from models import (
     Student,
     User,
 )
-from models.AppSettings import SETTINGS_ID
 from permissions import role_capabilities
 from schemas.Attendance import SaveAttendancePayload
-from schemas.Attendance import SetStatusPayload  # noqa: F401  (used by router)
 from services.audit import make_audit
 from services.pagination import PageParams, count_of
-from services.util import not_found, now_utc
+from services.util import (
+    commit_or_raise,
+    not_found,
+    now_utc,
+    today_local,
+    unprocessable,
+)
 
 
 async def is_locked_for(db: AsyncSession, user: User, date_str: str) -> bool:
@@ -80,9 +84,14 @@ def _sessions_filtered(
     if date:
         stmt = stmt.where(AttendanceSession.date == date)
     # Dates are ISO yyyy-mm-dd strings, so lexicographic compare == date compare
-    # and the (term_id, date, period) index serves the range directly.
+    # and the (course_id, term_id, date) index serves the range directly. A
+    # month is written as a range, not `LIKE 'YYYY-MM%'`: a bound LIKE pattern
+    # under a non-C collation can't use a btree at all.
     if month:
-        stmt = stmt.where(AttendanceSession.date.startswith(month))
+        stmt = stmt.where(
+            AttendanceSession.date >= f"{month}-01",
+            AttendanceSession.date <= f"{month}-31",
+        )
     if date_from:
         stmt = stmt.where(AttendanceSession.date >= date_from)
     if date_to:
@@ -199,24 +208,57 @@ async def list_session_months(
 async def _find_session(
     db: AsyncSession, course_id: str, date: str, period: int
 ) -> Optional[AttendanceSession]:
+    # FOR UPDATE: a re-save diffs incoming statuses against stored ones. Two
+    # concurrent corrections without a row lock both read the same "before",
+    # the later commit silently overwrites the earlier, and its audit entry
+    # records a `from` that was already stale.
     res = await db.execute(
-        select(AttendanceSession).where(
+        select(AttendanceSession)
+        .where(
             AttendanceSession.course_id == course_id,
             AttendanceSession.date == date,
             AttendanceSession.period == period,
         )
+        .with_for_update()
     )
     return res.scalar_one_or_none()
+
+
+# Constraint → message for the attendance writes (see services/util.py).
+_SAVE_CONFLICTS = {
+    "uq_session_course_date_period": (
+        "This class hour was saved by someone else a moment ago — reload and "
+        "review it before saving again"
+    ),
+    "uq_record_session_student": "A student appears twice in this session",
+    "attendance_record_student_id_fkey": "One or more students do not exist",
+    "attendance_session_course_id_fkey": "Course not found",
+    "attendance_session_term_id_fkey": "Term not found",
+}
 
 
 async def save_attendance(
     db: AsyncSession, user: User, payload: SaveAttendancePayload
 ) -> AttendanceSession:
+    """Upsert one class hour. A first save is *marking* (`mark_scope`); a
+    re-save of an existing session is a *correction* (`edit_attendance` —
+    teachers are first-time only). The permission check lives here, not in the
+    router, so no caller can reach the write without it."""
+    existing = await _find_session(db, payload.course_id, payload.date, payload.period)
+    if existing is None:
+        await ensure_can_mark(db, user, payload.course_id, payload.term_id)
+    elif not role_capabilities(user.role).edit_attendance:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This session already exists and you cannot edit it",
+        )
+
+    if payload.date > today_local().isoformat():
+        raise unprocessable("Attendance cannot be marked for a future date")
     if await is_locked_for(db, user, payload.date):
         raise _forbidden_locked()
 
     now = now_utc()
-    existing = await _find_session(db, payload.course_id, payload.date, payload.period)
 
     if existing is not None:
         # A session is identified by (course, date, period); its term follows
@@ -312,7 +354,7 @@ async def save_attendance(
                     )
                 )
                 existing.records.remove(old)
-        await db.commit()
+        await commit_or_raise(db, _SAVE_CONFLICTS)
         await db.refresh(existing)
         return existing
 
@@ -344,7 +386,7 @@ async def save_attendance(
             note=f"{len(payload.records)} students",
         )
     )
-    await db.commit()
+    await commit_or_raise(db, _SAVE_CONFLICTS)
     await db.refresh(session)
     return session
 
@@ -352,7 +394,8 @@ async def save_attendance(
 async def set_attendance_status(
     db: AsyncSession, user: User, session_id: str, student_id: str, new_status
 ) -> AttendanceSession:
-    session = await db.get(AttendanceSession, session_id)
+    # Row lock for the same reason as `_find_session`.
+    session = await db.get(AttendanceSession, session_id, with_for_update=True)
     if session is None:
         raise not_found("Session not found")
     if await is_locked_for(db, user, session.date):
@@ -392,7 +435,7 @@ async def set_attendance_status(
             to_status=new_status,
         )
     )
-    await db.commit()
+    await commit_or_raise(db, _SAVE_CONFLICTS)
     await db.refresh(session)
     return session
 

@@ -26,10 +26,10 @@ class StudyMaterial(Base, Repr):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     course_id: Mapped[str] = mapped_column(
-        ForeignKey("course.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("course.id", ondelete="CASCADE"), nullable=False
     )
     term_id: Mapped[str] = mapped_column(
-        ForeignKey("academic_term.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("academic_term.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -3,16 +3,20 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-import services.cache as cache_keys
 from ids import new_id
-from models import Program, Semester
+from models import Course, Program, Semester, User
+from services.audit import guard_attendance_cascade
 from services.cache import invalidate_curriculum
 from schemas.Program import ProgramCreate, ProgramUpdate
-from services.util import apply_updates, conflict, not_found
+from services.util import apply_updates, commit_or_raise, not_found
+
+_CONFLICTS = {
+    "program_department_id_fkey": "Department not found",
+    "uq_semester_program_number": "Semester number already exists for this program",
+}
 
 
 async def list_programs(
@@ -59,13 +63,9 @@ async def create_program(db: AsyncSession, data: ProgramCreate) -> Program:
     # Auto-generate semesters 1..N (mirrors the frontend create dialog).
     for n in range(1, data.semester_count + 1):
         db.add(Semester(id=new_id("sem"), program_id=prog.id, number=n))
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise conflict("Program could not be created (duplicate or bad reference)")
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(prog)
-    invalidate_curriculum()
+    await invalidate_curriculum()
     return prog
 
 
@@ -74,14 +74,22 @@ async def update_program(
 ) -> Program:
     prog = await _get_program_row(db, program_id)
     apply_updates(prog, data)
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(prog)
-    invalidate_curriculum()
+    await invalidate_curriculum()
     return prog
 
 
-async def delete_program(db: AsyncSession, program_id: str) -> None:
+async def delete_program(db: AsyncSession, user: User, program_id: str) -> None:
     prog = await _get_program_row(db, program_id)
+    await guard_attendance_cascade(
+        db,
+        user,
+        label=f"Program {prog.code}",
+        courses=select(Course.id)
+        .join(Semester, Semester.id == Course.semester_id)
+        .where(Semester.program_id == program_id),
+    )
     await db.delete(prog)
     await db.commit()
-    invalidate_curriculum()
+    await invalidate_curriculum()

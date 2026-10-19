@@ -1,6 +1,6 @@
-import hashlib
+import asyncio
 import logging
-import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,11 +9,12 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+from sqlalchemy import text
 
 from config import assert_production_ready, settings
-from logging_config import request_logger, setup_logging
+from database.connection import async_session, engine
+from logging_config import setup_logging
+from middleware import ETagMiddleware, RequestLoggingMiddleware, ServerErrorsMiddleware
 from rate_limit import limiter
 
 setup_logging()
@@ -24,7 +25,7 @@ if settings.sentry_dsn:
 
     sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)
 
-from routers import (
+from routers import (  # noqa: E402  (after logging/Sentry are configured)
     assignments,
     attendance,
     auth,
@@ -43,117 +44,39 @@ from routers import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="SCAS ERP API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    # Close pooled connections on shutdown instead of leaving Postgres to time
+    # them out — matters on every rolling restart with several workers.
+    await engine.dispose()
 
 
-async def request_logging_middleware(request: Request, call_next):
-    start = time.monotonic()
-    response = await call_next(request)
-    duration_ms = round((time.monotonic() - start) * 1000, 1)
-    user_id = getattr(request.state, "user_id", None)
-    request_logger.info(
-        "request",
-        extra={
-            "method": request.method,
-            "path": request.url.path,
-            "status": response.status_code,
-            "durationMs": duration_ms,
-            "userId": user_id,
-        },
-    )
-    return response
+app = FastAPI(title="SCAS ERP API", version="1.0.0", lifespan=lifespan)
 
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     if exc.status_code >= 500:
         logger.error("HTTP %s on %s: %s", exc.status_code, request.url.path, exc.detail)
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
-
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    # Keep the exception's headers — `WWW-Authenticate: Bearer` on a 401 was
+    # being dropped here.
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "Internal server error"},
-    )
-
-# Responses larger than this aren't buffered for hashing (file downloads).
-_ETAG_MAX_BYTES = 1024 * 1024
-
-
-async def _read_body(response) -> bytes | None:
-    """Body bytes for either a streaming or an already-materialised response.
-
-    Error responses raised inside the stack are plain `Response` objects with a
-    `.body` and no `.body_iterator`; reading the wrong one raises *inside* the
-    ASGI callable, which breaks the protocol and resets the connection instead
-    of surfacing the original error.
-    """
-    iterator = getattr(response, "body_iterator", None)
-    if iterator is not None:
-        return b"".join([chunk async for chunk in iterator])
-    body = getattr(response, "body", None)
-    return bytes(body) if body is not None else None
-
-
-@app.middleware("http")
-async def etag_middleware(request: Request, call_next):
-    """Conditional GETs: hash the body into an ETag and answer repeat requests
-    with 304 (no body).
-
-    Cheap on the server and removes the transfer entirely for the many small,
-    rarely-changing reads (settings, terms, courses, directory) that every page
-    requests on every navigation.
-    """
-    response = await call_next(request)
-    if request.method != "GET" or response.status_code != 200:
-        return response
-    if not response.headers.get("content-type", "").startswith("application/json"):
-        return response
-
-    body = await _read_body(response)
-    if body is None:
-        return response
-
-    headers = dict(response.headers)
-    if len(body) > _ETAG_MAX_BYTES:
-        headers["content-length"] = str(len(body))
-        return Response(
-            content=body,
-            status_code=200,
-            headers=headers,
-            media_type=response.media_type,
-        )
-
-    etag = f'W/"{hashlib.md5(body).hexdigest()}"'
-    headers["etag"] = etag
-    # Always revalidate: correctness first — the 304 is what saves the bytes,
-    # not a stale window in which the client skips asking.
-    headers.setdefault("cache-control", "private, no-cache, must-revalidate")
-
-    if request.headers.get("if-none-match") == etag:
-        headers.pop("content-length", None)
-        headers.pop("content-type", None)
-        return Response(status_code=304, headers=headers)
-
-    headers["content-length"] = str(len(body))
-    return Response(
-        content=body,
-        status_code=200,
-        headers=headers,
-        media_type=response.media_type,
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
     )
 
 
-# Registered *after* the ETag middleware so it ends up outside it: the ETag is
-# computed over the raw JSON, then the result (or the empty 304) is compressed.
+# Middleware, innermost first (each add_middleware wraps everything before it).
+# See middleware.py for why the order is what it is.
+app.add_middleware(ETagMiddleware)
 # JSON list responses compress extremely well — repeated camelCase keys — so
 # this is the cheapest bandwidth win available. 500 bytes is below the size
 # where compression stops paying for its own CPU.
 app.add_middleware(GZipMiddleware, minimum_size=500)
-
+app.add_middleware(ServerErrorsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -172,15 +95,60 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# Registered last so it wraps everything above: it logs the actual status
-# code sent to the client (a 304 from the ETag middleware, a 429 from the
-# rate limiter), not the route handler's raw pre-middleware response.
-app.add_middleware(BaseHTTPMiddleware, dispatch=request_logging_middleware)
+# Outermost, so it logs the status actually sent to the client (a 304 from the
+# ETag middleware, a 429 from the rate limiter, a 500 from ServerErrors).
+app.add_middleware(RequestLoggingMiddleware)
 
 
 @app.get("/health", tags=["meta"])
 async def health():
+    """Liveness: the process is up and serving. No dependency checks — a slow or
+    briefly-unreachable database must not make the orchestrator kill the pod."""
     return {"status": "ok"}
+
+
+# A readiness probe must answer fast either way; without a bound it waited out
+# the pool timeout (30s) behind a dead database.
+_READY_TIMEOUT_S = 3.0
+
+
+@app.get("/health/ready", tags=["meta"])
+async def readiness():
+    """Readiness: can this instance actually serve requests? Verifies the
+    database (and Redis, when configured) so a container whose dependencies are
+    down reports *not ready* (503) instead of accepting traffic it can only 500.
+    This is what the compose healthcheck targets — `/health` alone stays green
+    with a dead database."""
+    checks: dict[str, str] = {}
+
+    async def _db() -> None:
+        async with async_session() as session:
+            await session.execute(text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(_db(), _READY_TIMEOUT_S)
+        checks["database"] = "ok"
+    except Exception:
+        logger.exception("Readiness: database check failed")
+        checks["database"] = "error"
+
+    if settings.redis_url:
+        try:
+            from services.redis_client import get_redis
+
+            await asyncio.wait_for(get_redis().ping(), _READY_TIMEOUT_S)
+            checks["redis"] = "ok"
+        except Exception:
+            logger.exception("Readiness: redis check failed")
+            checks["redis"] = "error"
+
+    ready = all(v == "ok" for v in checks.values())
+    return JSONResponse(
+        status_code=(
+            status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
+        ),
+        content={"status": "ready" if ready else "degraded", "checks": checks},
+    )
 
 
 for _module in (

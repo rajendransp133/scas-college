@@ -2,11 +2,76 @@ from __future__ import annotations
 
 from typing import Optional
 
+from fastapi import HTTPException, status
+from sqlalchemy import Select, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from enums.AttendanceStatus import AttendanceStatusEnum
 from enums.AuditAction import AuditActionEnum
 from ids import new_id
-from models import AuditEntry
+from models import AttendanceRecord, AttendanceSession, AuditEntry, User
 from services.util import now_utc
+
+
+async def guard_attendance_cascade(
+    db: AsyncSession,
+    user: User,
+    *,
+    label: str,
+    courses: Optional[Select] = None,
+    student_id: Optional[str] = None,
+) -> None:
+    """Call before a delete whose FK cascade reaches `attendance_record`.
+
+    Deleting a student, course, semester, program or department used to erase
+    every attendance record under it — and the `original_status` trail with it —
+    without a line in the audit log and regardless of the attendance lock: the
+    strongest cover for tampering the system offered, and it needed no
+    correction rights at all. So, when any attendance would go:
+
+    * a role without `override_lock` is refused if any affected date is locked;
+    * one audit entry records what was removed and by whom (the rows themselves
+      are gone, so the log is the only evidence left).
+
+    `courses` is a SELECT of course ids (for curriculum deletes); `student_id`
+    names a student (for a student delete). Exactly one is given.
+    """
+    from services.attendance import is_locked_for  # attendance imports this module
+
+    records = select(
+        func.count(AttendanceRecord.id).label("records"),
+        func.count(func.distinct(AttendanceSession.id)).label("sessions"),
+        func.min(AttendanceSession.date).label("earliest"),
+    ).select_from(AttendanceRecord).join(
+        AttendanceSession, AttendanceSession.id == AttendanceRecord.session_id
+    )
+    if student_id is not None:
+        records = records.where(AttendanceRecord.student_id == student_id)
+    else:
+        records = records.where(AttendanceSession.course_id.in_(courses))
+    found = (await db.execute(records)).one()
+    if not found.records:
+        return
+
+    if await is_locked_for(db, user, found.earliest):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"{label} has attendance on locked dates and cannot be deleted. "
+                "Deactivate it instead, or ask an administrator."
+            ),
+        )
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.REMOVE_RECORD if student_id else AuditActionEnum.DELETE_SESSION,
+            student_id=student_id,
+            note=(
+                f"{label} deleted: {found.records} attendance records across "
+                f"{found.sessions} sessions removed (earliest {found.earliest})"
+            ),
+        )
+    )
 
 
 def make_audit(

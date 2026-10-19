@@ -61,6 +61,6 @@ async def update_program(
 async def delete_program(
     program_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    user: User = Depends(_academics),
 ):
-    await svc.delete_program(db, program_id)
+    await svc.delete_program(db, user, program_id)

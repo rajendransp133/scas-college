@@ -8,8 +8,15 @@ class Base(DeclarativeBase):
 
 def str_enum(enum_cls, name: str):
     """A string-backed enum column that stores the enum's *value* strings
-    (e.g. "Associate Professor", "attendance-manager") as VARCHAR + CHECK,
-    matching the frontend literals 1:1."""
+    (e.g. "Associate Professor", "attendance-manager") as a plain VARCHAR,
+    matching the frontend literals 1:1.
+
+    There is deliberately **no** database CHECK constraint
+    (`create_constraint` defaults off): values are validated on every write by
+    SQLAlchemy (`validate_strings`) and by the Pydantic schemas, and leaving
+    the column unconstrained is what lets a new enum value ship without a
+    migration (as `remove-record` did). Only raw SQL can store an unknown value.
+    """
     return SAEnum(
         enum_cls,
         name=name,

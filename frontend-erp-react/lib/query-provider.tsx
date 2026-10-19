@@ -25,6 +25,13 @@ export const STALE = {
  *
  * - `staleTime` defaults to a minute: without it every mount refetches, which
  *   with this many components meant duplicate requests on every navigation.
+ * - `refetchOnMount` stays at its default (`true`), which refetches on mount
+ *   **only when the data is stale or was invalidated** — fresh data is served
+ *   from cache with no request, so the `staleTime` tiers are what prevent the
+ *   double-requesting. Setting it to `false` disabled that check entirely:
+ *   a mutation's `invalidateQueries` only refetched queries on screen, so
+ *   saving attendance and then opening the summary showed the old numbers for
+ *   up to `gcTime`.
  * - `gcTime` is generous so going back to a page you just left is instant.
  * - 4xx responses are never retried (they won't succeed on a retry); transient
  *   5xx/network errors get a couple of tries with backoff.
@@ -38,7 +45,6 @@ export function QueryProvider({ children }: { children: ReactNode }) {
             staleTime: STALE.standard,
             gcTime: 10 * 60_000,
             refetchOnWindowFocus: false,
-            refetchOnMount: false,
             retry: (failureCount, error) => {
               if (error instanceof ApiError && error.status >= 400 && error.status < 500)
                 return false

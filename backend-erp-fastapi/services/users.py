@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -13,9 +13,9 @@ import services.cache as cache_keys
 from models import User
 from schemas.User import UserCreate, UserUpdate
 from services.cache import cached, invalidate
-from security import hash_password
+from security import hash_password, verify_password
 from services.pagination import PageParams, apply_sort, paginate, search_clause
-from services.util import conflict, not_found
+from services.util import commit_or_raise, conflict, not_found, unprocessable
 
 SORTABLE = {
     "name": User.name,
@@ -89,16 +89,51 @@ async def _assert_rep_class_free(
 ) -> None:
     if program_id is None or class_semester is None:
         return
+    # A friendly early 409. `uq_user_rep_class` is what actually holds the rule
+    # under concurrency; `.first()` (not `scalar_one_or_none`) keeps this path
+    # working even against data written before that index existed.
     rows = await db.execute(
-        select(User).where(
+        select(User.id).where(
             User.role == UserRoleEnum.STUDENT_REP,
             User.program_id == program_id,
             User.class_semester == class_semester,
+            User.id != exclude_id if exclude_id else true(),
         )
     )
-    existing = rows.scalar_one_or_none()
-    if existing is not None and existing.id != exclude_id:
-        raise conflict("A representative account for this class already exists")
+    if rows.first() is not None:
+        raise conflict(_CONFLICTS["uq_user_rep_class"])
+
+
+# Constraint → message for account writes (see services/util.py).
+_CONFLICTS = {
+    "uq_user_rep_class": "A representative account for this class already exists",
+    "ix_user_email_lower": "A user with this email already exists",
+    "app_user_email_key": "A user with this email already exists",
+    "app_user_teacher_id_fkey": "Teacher not found",
+    "app_user_program_id_fkey": "Program not found",
+}
+
+
+def _assert_role_shape(
+    role: UserRoleEnum, program_id: Optional[str], class_semester: Optional[int]
+) -> None:
+    """A rep login *is* its class — without both halves it would be an account
+    whose read scope is empty and which `_assert_rep_class_free` can't police."""
+    if role == UserRoleEnum.STUDENT_REP and (program_id is None or class_semester is None):
+        raise unprocessable(
+            "A class representative account needs a program and a semester"
+        )
+
+
+def _clear_fields_the_role_does_not_use(user: User) -> None:
+    """A role change must not leave the old role's scope attached: a teacher
+    demoted to attendance-manager keeping `teacher_id` still has own-course
+    rights through it, and a rep promoted to staff would keep a class pin."""
+    if user.role != UserRoleEnum.STUDENT_REP:
+        user.program_id = None
+        user.class_semester = None
+    if user.role not in (UserRoleEnum.TEACHER, UserRoleEnum.HOD, UserRoleEnum.PRINCIPAL):
+        user.teacher_id = None
 
 
 def assert_not_self_demotion(actor: User, user_id: str, new_role: UserRoleEnum) -> None:
@@ -144,6 +179,7 @@ def assert_may_manage(actor: User, target_role: UserRoleEnum) -> None:
 
 async def create_user(db: AsyncSession, data: UserCreate, actor: User) -> User:
     assert_may_manage(actor, data.role)
+    _assert_role_shape(data.role, data.program_id, data.class_semester)
     await _assert_email_free(db, data.email)
     if data.role == UserRoleEnum.STUDENT_REP:
         await _assert_rep_class_free(db, data.program_id, data.class_semester)
@@ -157,10 +193,11 @@ async def create_user(db: AsyncSession, data: UserCreate, actor: User) -> User:
         program_id=data.program_id,
         class_semester=data.class_semester,
     )
+    _clear_fields_the_role_does_not_use(user)
     db.add(user)
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(user)
-    invalidate(cache_keys.DIRECTORY)
+    await invalidate(cache_keys.DIRECTORY)
     return user
 
 
@@ -179,12 +216,27 @@ async def update_user(
     assert_may_manage(actor, user.role)
     assert_may_manage(actor, new_role)
     assert_not_self_demotion(actor, user_id, new_role)
+    # Disabling your own account is a self-inflicted lockout with the same shape
+    # as self-deletion (which delete_user already refuses).
+    if user_id == actor.id and fields.get("is_active") is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot disable your own account",
+        )
     new_program = fields.get("program_id", user.program_id)
     new_semester = fields.get("class_semester", user.class_semester)
+    _assert_role_shape(new_role, new_program, new_semester)
     if new_role == UserRoleEnum.STUDENT_REP:
         await _assert_rep_class_free(
             db, new_program, new_semester, exclude_id=user_id
         )
+
+    # An admin resetting someone's password, or disabling an account, must cut
+    # off any token that account is still holding — otherwise the reset/disable
+    # takes up to the token's 12h lifetime to bite. Bump the epoch so
+    # `get_current_user` rejects those tokens on their next request.
+    resetting_password = bool(fields.get("password"))
+    disabling = fields.get("is_active") is False and user.is_active
 
     for key, value in fields.items():
         if key == "password":
@@ -192,10 +244,65 @@ async def update_user(
                 user.password_hash = await run_in_threadpool(hash_password, value)
             continue
         setattr(user, key, value)
+    _clear_fields_the_role_does_not_use(user)
 
+    if resetting_password or disabling:
+        _revoke_tokens(user)
+
+    await commit_or_raise(db, _CONFLICTS)
+    await db.refresh(user)
+    await invalidate(cache_keys.DIRECTORY)
+    return user
+
+
+def _revoke_tokens(user: User) -> None:
+    """Bump the epoch so every token minted before now stops working.
+
+    Assigned as a SQL expression (`SET token_epoch = token_epoch + 1`), not a
+    Python `+= 1`: a self password change racing an admin reset would otherwise
+    both write N+1 from the same stale read, leaving one of them un-revoked.
+    """
+    user.token_epoch = User.token_epoch + 1
+
+
+async def change_password(
+    db: AsyncSession, user: User, current_password: str, new_password: str
+) -> User:
+    """Self-service password change for every role except the class rep.
+
+    Rep logins are one shared account per class, not a person's — letting any
+    student holding it rotate the password would lock out the rest of the
+    class. Those stay admin/principal-reset only, via `PUT /users/{id}`.
+    """
+    if user.role == UserRoleEnum.STUDENT_REP:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Class representative accounts are shared — ask an "
+                "administrator to reset the password"
+            ),
+        )
+    # Same threadpool treatment as login: two bcrypt calls back to back would
+    # otherwise stall this worker's event loop for ~half a second.
+    if not await run_in_threadpool(
+        verify_password, current_password, user.password_hash
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    if new_password == current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current one",
+        )
+    user.password_hash = await run_in_threadpool(hash_password, new_password)
+    # Rotate the epoch so every *other* session (a token this account handed out
+    # elsewhere, or a stolen one) stops working — the whole point of a password
+    # change. The caller re-issues a token for the current device.
+    _revoke_tokens(user)
     await db.commit()
     await db.refresh(user)
-    invalidate(cache_keys.DIRECTORY)
     return user
 
 
@@ -209,4 +316,4 @@ async def delete_user(db: AsyncSession, user_id: str, actor: User) -> None:
     assert_may_manage(actor, user.role)
     await db.delete(user)
     await db.commit()
-    invalidate(cache_keys.DIRECTORY)
+    await invalidate(cache_keys.DIRECTORY)

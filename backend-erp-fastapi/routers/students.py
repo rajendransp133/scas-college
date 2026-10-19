@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import services.scope as scope
 import services.students as svc
 from database.connection import get_db
-from deps import current_term_id, get_current_user, require_capability
+from deps import caps_of, current_term_id, get_current_user, require_capability
 from models import User
 from schemas.Page import Page
 from schemas.Student import (
@@ -16,8 +16,10 @@ from schemas.Student import (
     StudentCreate,
     StudentResponse,
     StudentUpdate,
+    redact_student,
+    redact_students,
 )
-from services.pagination import PageParams, page_params
+from services.pagination import MAX_PAGE_SIZE, PageParams, page_params
 
 router = APIRouter(prefix="/students", tags=["students"])
 _academics = require_capability("manage_academics")
@@ -66,7 +68,7 @@ async def list_students(
         semesters=semesters,
     )
     return Page.of(
-        [StudentResponse.model_validate(s) for s in items],
+        redact_students(items, caps_of(user).view_student_pii),
         total,
         params.page,
         params.page_size,
@@ -97,7 +99,8 @@ async def list_student_ids(
 
 @router.get("/lookup")
 async def lookup_students(
-    ids: list[str] = Query(default_factory=list),
+    # Capped like a page: the audit log resolves one page of ids at a time.
+    ids: list[str] = Query(default_factory=list, max_length=MAX_PAGE_SIZE),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -132,7 +135,7 @@ async def get_student(
     await scope.assert_student_visible(
         db, user, student, await current_term_id(db)
     )
-    return student
+    return redact_student(student, caps_of(user).view_student_pii)
 
 
 @router.post("", response_model=StudentResponse, status_code=status.HTTP_201_CREATED)
@@ -158,9 +161,9 @@ async def update_student(
 async def delete_student(
     student_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    user: User = Depends(_academics),
 ):
-    await svc.delete_student(db, student_id)
+    await svc.delete_student(db, user, student_id)
 
 
 @router.post("/{student_id}/toggle-active", response_model=StudentResponse)

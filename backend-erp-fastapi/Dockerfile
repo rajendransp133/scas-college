@@ -60,4 +60,4 @@ EXPOSE 8000
 # so gunicorn itself becomes PID 1 and receives signals directly, giving the
 # same graceful-shutdown behavior exec-form CMD would have while still
 # expanding the env var.
-CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-4} -b 0.0.0.0:8000 main:app"]
+CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-4} -b 0.0.0.0:8000 --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 5000 --max-requests-jitter 500 main:app"]

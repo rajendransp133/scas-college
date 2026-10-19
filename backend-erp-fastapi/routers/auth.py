@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import secrets
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -7,9 +10,10 @@ from starlette.concurrency import run_in_threadpool
 import services.users as users_svc
 from database.connection import get_db
 from deps import get_current_user
-from models import Teacher, User
-from rate_limit import limiter
 from enums.UserRole import UserRoleEnum
+from models import User
+from rate_limit import limiter
+from services.scope import hod_department_id
 from schemas.Auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -22,6 +26,13 @@ from security import create_access_token, hash_password, verify_password
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@lru_cache(maxsize=1)
+def _dummy_hash() -> str:
+    """A real bcrypt hash of nothing anyone knows — verified against when the
+    email matches no account, so that path costs the same as a real check."""
+    return hash_password(secrets.token_urlsafe(16))
+
+
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 async def login(
@@ -29,21 +40,28 @@ async def login(
 ):
     user = await users_svc.get_user_by_email(db, payload.email)
     # bcrypt is CPU-bound (~100-300ms) — off the event loop so one login
-    # burst can't stall every other concurrent request in this worker.
-    if user is None or not await run_in_threadpool(
-        verify_password, payload.password, user.password_hash
-    ):
+    # burst can't stall every other concurrent request in this worker. It runs
+    # for unknown and disabled accounts too (against a dummy hash), so response
+    # time doesn't reveal which accounts exist or are switched off.
+    password_ok = await run_in_threadpool(
+        verify_password,
+        payload.password,
+        user.password_hash if user is not None else _dummy_hash(),
+    )
+    if user is None or not user.is_active or not password_ok:
+        # A disabled account fails identically to a bad password — the caller
+        # learns nothing about which accounts exist or are switched off.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    token = create_access_token(user.id)
+    token = create_access_token(user.id, user.token_epoch)
     return TokenResponse(
         access_token=token, user=UserResponse.model_validate(user)
     )
 
 
-@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/change-password", response_model=TokenResponse)
 @limiter.limit("5/minute")
 async def change_password(
     request: Request,
@@ -51,36 +69,15 @@ async def change_password(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Self-service password change for every role except the class rep.
-
-    Rep logins are one shared account per class, not a person's — letting any
-    student holding it rotate the password would lock out the rest of the
-    class. Those stay admin/principal-reset only, via `PUT /users/{id}`.
-    """
-    if user.role == UserRoleEnum.STUDENT_REP:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Class representative accounts are shared — ask an "
-                "administrator to reset the password"
-            ),
-        )
-    # Same threadpool treatment as login: two bcrypt calls back to back would
-    # otherwise stall this worker's event loop for ~half a second.
-    if not await run_in_threadpool(
-        verify_password, payload.current_password, user.password_hash
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
-    if payload.new_password == payload.current_password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be different from the current one",
-        )
-    user.password_hash = await run_in_threadpool(hash_password, payload.new_password)
-    await db.commit()
+    """See `services.users.change_password`. The current device stays signed
+    in on the fresh token returned here, while every other session is cut off."""
+    user = await users_svc.change_password(
+        db, user, payload.current_password, payload.new_password
+    )
+    token = create_access_token(user.id, user.token_epoch)
+    return TokenResponse(
+        access_token=token, user=UserResponse.model_validate(user)
+    )
 
 
 @router.post("/logout")
@@ -96,10 +93,9 @@ async def me(
     department_id = None
     class_program_id = None
     class_semester = None
-    if user.role.value == "hod" and user.teacher_id:
-        teacher = await db.get(Teacher, user.teacher_id)
-        department_id = teacher.department_id if teacher else None
-    if user.role.value == "student-rep":
+    if user.role == UserRoleEnum.HOD:
+        department_id = await hod_department_id(db, user)
+    if user.role == UserRoleEnum.STUDENT_REP:
         class_program_id = user.program_id
         class_semester = user.class_semester
     return MeResponse(

@@ -38,7 +38,7 @@ python -m uvicorn main:app --reload --port 8000   # docs at http://localhost:800
   --autogenerate -m "msg"`.
 - **Windows:** run Python in **PowerShell**, not Git Bash. When running scripts by absolute path,
   set `PYTHONPATH` to the backend dir so top-level packages import.
-- **Tests:** `python -m pytest` (102 tests). `tests/` uses pytest + testcontainers — a throwaway
+- **Tests:** `python -m pytest` (144 tests). `tests/` uses pytest + testcontainers — a throwaway
   `postgres:16` per session, migrated with `alembic upgrade head`, truncated between tests. Docker
   must be running. Factories in `conftest.py` arrange scenarios through the real HTTP API.
 
@@ -52,7 +52,8 @@ Request flow: **router → service → model**, with schemas at the boundary.
 - `deps.py` — `get_current_user` (Bearer JWT), `require_capability(flag)`, `ensure_can_mark`,
   `own_course_ids`, `current_term_id`.
 - `enums/` — `str` enums whose **values are the frontend literals** (e.g. `"Associate Professor"`,
-  `"attendance-manager"`). Stored via `models.base.str_enum` (VARCHAR + CHECK, `native_enum=False`).
+  `"attendance-manager"`). Stored via `models.base.str_enum` (plain VARCHAR, `native_enum=False`, **no** DB CHECK — values
+  are validated by SQLAlchemy and Pydantic, which is what lets a new value ship without a migration).
 - `models/` — SQLAlchemy 2.0, **string PKs** matching the frontend ids (`dept-cs`, `tch-1`). One
   class per file; register every model in `models/__init__.py` (Alembic autogenerate reads
   `Base.metadata`). `AppSettings` is a singleton row holding `current_term_id` + `lock_date`.
@@ -115,6 +116,21 @@ Tests: `tests/test_admin_lockout.py`.
 it **except `student-rep`** (403): those are one shared login per class, so one
 student rotating it would lock out the rest — admins/principals reset them via
 `PUT /users/{id}` instead.
+
+**Accounts disable rather than delete, and access can actually be revoked.**
+`User.is_active` (default true) soft-disables a login: `get_current_user` rejects
+an inactive account (401) and `/auth/login` refuses it (indistinguishable from a
+bad password), so a departing/suspended member loses access while their
+audit-actor links survive. `update_user` refuses to disable *your own* account
+(the self-lockout guard beside `assert_not_self_demotion`). Because a JWT is
+stateless and valid up to 12h, disabling — and password changes — would
+otherwise leave outstanding tokens working; `User.token_epoch` closes that. Every
+JWT carries the epoch it was minted at (`security.create_access_token`), and
+`get_current_user` rejects any token whose epoch is behind the account's current
+value. The epoch is bumped on disable and on any password change
+(`change_password` and an admin reset via `update_user`); `change_password`
+returns a fresh token so the current device stays signed in while every other
+session is cut off. Tests: `test_account_lifecycle.py`.
 
 ## Student intake: only identity + class placement are required
 
@@ -216,9 +232,16 @@ roster (addresses, dates of birth, guardian phone numbers) and the college-wide
 summary. `lib/permissions.ts` still drives the UI; it is no longer the guard.
 Tests: `tests/test_read_scoping.py`.
 
-> Still open: the roster endpoints return the **full** `StudentResponse` to
-> everyone in scope, so a rep sees their own classmates' address and guardian
-> phone. Narrowing that response for read-only roles is a separate change.
+Personal fields are additionally gated by a **`view_student_pii`** capability
+(admin/principal/hod), separate from `view_scope`. Readers without it — teacher,
+attendance-manager, student-rep — get the roster (roll + name + placement +
+lifecycle flags) with `email`/`phone`/`address`/`dateOfBirth`/`guardian*` nulled
+by `schemas/Student.py::redact_student`, applied at every Student serialization
+boundary (`/students`, `/students/{id}`, `/attendance/roster`,
+`/attendance/class-roster`). The response model is unchanged (those fields are
+already `Optional`), so a redacted record looks like one the registrar hasn't
+filled in. Mirrored in `lib/permissions.ts` (`viewStudentPii`). Tests:
+`test_read_scoping.py` (the PII assertions).
 
 ## Class-rep logins are retired when their class moves on
 
@@ -373,14 +396,26 @@ generator script has since been removed along with the demo seeds). Four rules h
    `lower(roll_number)` serve `ILIKE '%q%'`, which btree cannot; partial indexes cover the
    selective cases (roster = enrolled students only, corrected records only).
 
-**Caching** (`services/cache.py`) is a deliberately narrow in-process TTL cache over the small,
-hot, near-static reads: `/settings` (read on every page), `/terms`, `/courses`, `/users/directory`,
-and `own_course_ids` per (teacher, term). It is **single-flight** — concurrent misses run the loader
-once — and driven by **explicit invalidation**, not by the TTL: `set_lock_date` invalidates
-`SETTINGS` so the lock guard can never authorise a write against a stale lock, curriculum edits call
-`invalidate_curriculum()`, assignment writes drop `ASSIGNMENTS`. Attendance, students and audit are
-never cached. Single-process only; behind multiple workers each holds its own copy, bounded by the
-TTL — swap the backend for Redis and keep the interface if that changes.
+**Caching** (`services/cache.py`) is a deliberately narrow TTL cache over the small, hot,
+near-static reads: `/settings` (read on every page), `/terms`, `/courses`, `/users/directory`,
+`own_course_ids` per (teacher, term) and `dept_course_ids` per department (HOD scope). It is
+**single-flight** — concurrent misses run the loader once — and driven by **explicit
+invalidation**, not by the TTL: `set_lock_date` invalidates `SETTINGS` so the lock guard can never
+authorise a write against a stale lock, curriculum edits call `invalidate_curriculum()` (which also
+drops `ASSIGNMENTS` and `DEPT_COURSES`, because curriculum deletes cascade through
+`course_assignment`), assignment writes and teacher deletes drop `ASSIGNMENTS`. Attendance,
+students and audit are never cached. In-memory without `REDIS_URL`, Redis with it (section below).
+Three rules every call site relies on:
+
+1. **Cached values are plain JSON** (dicts/lists/scalars) — loaders convert ORM/Pydantic objects
+   first, and Redis round-trips through `json`, never `pickle`. Callers wanting a set build a fresh
+   one (`set(await cached(...))`). This is load-bearing: the in-memory backend once handed out its
+   stored set, `visible_course_ids` unioned the department into it with `|=`, and every HOD gained
+   mark/upload rights on their whole department after any read (`test_scope_regressions.py`).
+2. **`await invalidate(...)`** — invalidation is async and awaited (it was fire-and-forget on
+   Redis, so the delete landed after the response).
+3. A load that started before an invalidation **doesn't write its result back** (generation counter
+   per backend), so a slow read racing a write can't re-cache the stale value for a TTL.
 
 `main.py` adds **GZip** (min 500 bytes) and an **ETag middleware** that hashes JSON GET bodies and
 answers repeat requests with `304` (`/courses` drops from ~98 KB to 0 bytes). The ETag middleware is
@@ -460,11 +495,54 @@ deployment and horizontal scale:
     marking) with a concrete pass bar (p95 <500ms reads / <800ms writes, error
     rate <0.1%) — see `../k6/README.md`.
 
+## Integrity at the boundary (constraint errors, cascades, validation)
+
+Rules added by the code-quality pass; follow them when writing a new endpoint.
+
+- **Commit through `services/util.py::commit_or_raise(db, _CONFLICTS)`**, never a bare
+  `db.commit()` on a write that can hit a constraint. It maps the constraint Postgres actually
+  rejected — by *name*, from each service's `_CONFLICTS` dict — to the API contract: unique → 409,
+  FK / NOT NULL / CHECK → 422, all with a human message. A service-level check-then-insert is a
+  courtesy 409; the database constraint is the guard (two concurrent first saves of a class hour,
+  two rep accounts for one class). Never map "any IntegrityError" to one message — that is how a
+  bad `departmentId` came back as "Roll number already exists".
+- **One student-rep per class is a partial UNIQUE index** (`uq_user_rep_class`, migration
+  `a7d2c4e9f1b3`), not just `_assert_rep_class_free`. Term FKs are `ON DELETE RESTRICT`.
+- **Deletes that cascade into `attendance_record`** (student, course, semester, program,
+  department) call `services/audit.py::guard_attendance_cascade` first: refused (403) for a role
+  without `override_lock` when any affected date is locked, and otherwise logged as one
+  `remove-record` / `delete-session` entry naming what went. A cascade used to erase records and
+  their `original_status` trail with nothing in the log — stronger cover than any correction.
+  Oversight counts `edit`, `remove-record` and `delete-session` together (`CORRECTION_ACTIONS`).
+- **Permission checks live in the service.** `save_attendance` decides mark-vs-edit itself
+  (the router used to, via the private `_find_session`), and locks the session row
+  (`FOR UPDATE`) so two concurrent corrections can't both diff against the same "before".
+- **Validation at the schema**: `schemas/base.py::IsoDate` is a real calendar date (not just the
+  regex); `UpdateModel.NOT_NULL` turns an explicit `null` for a NOT NULL column into a 422;
+  passwords are ≥ 8 everywhere; attendance payloads reject duplicate students; no future
+  attendance dates (`today_local()` — the college's zone, `COLLEGE_TIMEZONE`, not the UTC
+  container clock); promotion stops at the program's final semester; a student's program must
+  belong to their department; LIKE wildcards in `?search=` are escaped.
+- **Aggregates are scoped like reads**: `/stats/*` goes through
+  `scope.aggregate_department_scope` (college / HOD department / 403 for teacher and rep), and
+  `/attendance/summary/breakdown` is bounded by `visible_course_ids`, not just student visibility.
+  Unfiltered `/attendance/summary` and `/assignments` default to the current term.
+- **HTTP plumbing is pure ASGI** (`middleware.py`): ETag/304, request logging and a
+  `ServerErrorsMiddleware` that sits *inside* CORS, so a 500 still carries CORS headers (it used
+  to surface in the browser as a CORS error). Connections carry `statement_timeout`,
+  `lock_timeout` and `idle_in_transaction_session_timeout` (`config.py`); the engine is disposed
+  on shutdown.
+
 ## Tests
 
-`tests/` (pytest + testcontainers, 102 tests) covers auth, cascades, single-HOD,
+`tests/` (pytest + testcontainers, 144 tests) covers auth, cascades, single-HOD,
 attendance correction/audit/lock, uniqueness, account management + the
 admin-escalation guard, and student *and* teacher optional-field intake.
+`test_scope_regressions.py` (write scope after a read, `/stats` and breakdown
+scoping, malformed attendance writes) and `test_integrity_and_http.py`
+(concurrent rep creates, null/bad-FK writes → 4xx, audited cascade deletes, the
+audit term filter, ETag/304, `WWW-Authenticate`, CORS on a 500) came out of the
+code-quality pass described under "Integrity at the boundary" below.
 
 Four files came out of an end-to-end audit for *silent* bugs — wrong answers and
 missing guards rather than errors — and each pins behaviour that failed quietly

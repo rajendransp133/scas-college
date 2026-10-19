@@ -63,8 +63,8 @@ class Student(Base, Repr):
 
     # Orphan (not delete) students when their department/program is removed.
     department_id: Mapped[str | None] = mapped_column(
-        ForeignKey("department.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("department.id", ondelete="SET NULL"), nullable=True
     )
     program_id: Mapped[str | None] = mapped_column(
-        ForeignKey("program.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("program.id", ondelete="SET NULL"), nullable=True
     )

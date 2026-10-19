@@ -136,7 +136,11 @@ async def test_change_password_then_login_with_the_new_one(
         json={"currentPassword": "oldpass123", "newPassword": "newpass456"},
         headers=headers,
     )
-    assert r.status_code == 204, r.text
+    # Returns a fresh token for this device (the epoch rotated, revoking the old
+    # one) rather than 204 — see routers/auth.py::change_password.
+    assert r.status_code == 200, r.text
+    fresh = {"Authorization": f"Bearer {r.json()['accessToken']}"}
+    assert (await client.get("/auth/me", headers=fresh)).status_code == 200
 
     old = await client.post(
         "/auth/login", json={"email": teacher["email"], "password": "oldpass123"}

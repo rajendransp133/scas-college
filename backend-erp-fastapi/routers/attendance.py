@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.analytics as analytics
@@ -10,7 +10,7 @@ import services.attendance as svc
 import services.scope as scope
 import services.students as students_svc
 from database.connection import get_db
-from deps import caps_of, current_term_id, ensure_can_mark, get_current_user
+from deps import caps_of, current_term_id, get_current_user, require_capability
 from models import User
 from schemas.Attendance import (
     AttendanceSessionResponse,
@@ -18,7 +18,7 @@ from schemas.Attendance import (
     SetStatusPayload,
 )
 from schemas.Page import Page
-from schemas.Student import StudentResponse
+from schemas.Student import StudentResponse, redact_students
 from services.pagination import PageParams, page_params
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
@@ -107,7 +107,8 @@ async def roster(
 ):
     """Who to mark today: currently enrolled students only."""
     await scope.assert_course_visible(db, user, course_id, await _scope_term(db, None))
-    return await svc.get_roster(db, course_id)
+    students = await svc.get_roster(db, course_id)
+    return redact_students(students, caps_of(user).view_student_pii)
 
 
 @router.get("/class-roster", response_model=list[StudentResponse])
@@ -123,7 +124,8 @@ async def class_roster(
     await scope.assert_course_visible(
         db, user, course_id, await _scope_term(db, term_id)
     )
-    return await svc.get_class_roster(db, course_id, term_id, month)
+    students = await svc.get_class_roster(db, course_id, term_id, month)
+    return redact_students(students, caps_of(user).view_student_pii)
 
 
 @router.get("/summary")
@@ -143,13 +145,16 @@ async def summary(
 ):
     """Per-student attendance %, aggregated in SQL — replaces the client-side
     pass over every session in the term. `totals` covers the whole filtered
-    set, so the header counts don't depend on the page."""
-    allowed = await scope.visible_course_ids(db, user, await _scope_term(db, term_id))
+    set, so the header counts don't depend on the page. With no `termId` it
+    reports the current term — an unfiltered call would otherwise aggregate
+    every record the college has ever saved."""
+    term = await _scope_term(db, term_id)
+    allowed = await scope.visible_course_ids(db, user, term)
     items, total, totals = await analytics.student_summary(
         db,
         params,
         allowed_course_ids=allowed,
-        term_id=term_id,
+        term_id=term,
         program_id=program_id,
         semester=semester,
         course_id=course_id,
@@ -174,7 +179,12 @@ async def summary_breakdown(
     term = await _scope_term(db, term_id)
     student = await students_svc.get_student(db, student_id)
     await scope.assert_student_visible(db, user, student, term)
-    return await analytics.student_course_breakdown(db, student_id, term_id)
+    return await analytics.student_course_breakdown(
+        db,
+        student_id,
+        term_id,
+        allowed_course_ids=await scope.visible_course_ids(db, user, term),
+    )
 
 
 @router.get("/red-flags")
@@ -182,14 +192,9 @@ async def red_flags(
     term_id: Optional[str] = Query(None, alias="termId"),
     min_pct: float = Query(75.0, alias="minPct", ge=0, le=100),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    _: User = Depends(require_capability("view_audit")),
 ):
     """Attendance-integrity warning signs for the oversight page."""
-    if not caps_of(user).view_audit:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing capability: view_audit",
-        )
     term = term_id or await current_term_id(db)
     return await analytics.correction_red_flags(db, term, min_pct)
 
@@ -200,18 +205,8 @@ async def save_attendance(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    existing = await svc._find_session(
-        db, payload.course_id, payload.date, payload.period
-    )
-    if existing is not None:
-        # Re-save = correction: requires edit capability (teachers are first-time only).
-        if not caps_of(user).edit_attendance:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This session already exists and you cannot edit it",
-            )
-    else:
-        await ensure_can_mark(db, user, payload.course_id, payload.term_id)
+    """Mark (first save) or correct (re-save) one class hour. Permission —
+    mark scope vs. edit capability — is decided inside the service."""
     return await svc.save_attendance(db, user, payload)
 
 
@@ -224,13 +219,8 @@ async def set_status(
     student_id: str,
     payload: SetStatusPayload,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_capability("edit_attendance")),
 ):
-    if not caps_of(user).edit_attendance:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing capability: edit_attendance",
-        )
     return await svc.set_attendance_status(
         db, user, session_id, student_id, payload.status
     )
@@ -240,11 +230,6 @@ async def set_status(
 async def delete_session(
     session_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_capability("delete_attendance")),
 ):
-    if not caps_of(user).delete_attendance:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Missing capability: delete_attendance",
-        )
     await svc.delete_session(db, user, session_id)

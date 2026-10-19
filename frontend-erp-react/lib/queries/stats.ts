@@ -78,7 +78,7 @@ export function useShortfallCount(
 ) {
   const { token } = useAuthSession()
   return useQuery({
-    queryKey: qk.shortfall(termId),
+    queryKey: qk.shortfall(termId, minPct),
     queryFn: () =>
       apiGet<{ count: number }>(
         `/stats/shortfall-count${qs({ termId: termId ?? undefined, minPct })}`,

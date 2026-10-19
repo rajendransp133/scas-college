@@ -2,9 +2,10 @@
 
 Scope is deliberately narrow. Only data that (a) every page requests, (b) is
 small, and (c) changes through a known set of writes is cached — the current
-term and lock date, the term list, the flat course lookup, the user directory
-and the department list. Attendance, students and audit are **never** cached:
-they change constantly and correctness there matters more than latency.
+term and lock date, the term list, the flat course lookup, the user directory,
+per-teacher course sets and HOD department course sets. Attendance, students
+and audit are **never** cached: they change constantly and correctness there
+matters more than latency.
 
 Two backends, same public interface (`cached()` / `invalidate()` /
 `invalidate_curriculum()` / `invalidate_all()`), selected by whether
@@ -15,29 +16,43 @@ Two backends, same public interface (`cached()` / `invalidate()` /
   the local-dev default so nobody needs Redis running just to boot the app.
 * **Redis** (`REDIS_URL` set) — shared across every worker/replica, which is
   what makes cache invalidation actually correct once there's more than one
-  process: a write on worker A invalidates the key everyone reads. This was
-  the intended escape hatch from day one (see git history of this file) —
-  the interface below is unchanged so no call site needed to change.
+  process: a write on worker A invalidates the key everyone reads.
   Single-flight there is best-effort (a short `SET NX` lock, not a
   distributed queue) — a small thundering-herd window on a cold key is an
   acceptable trade-off given every cached value here is cheap to recompute.
 
+Three rules every caller relies on:
+
+1. **Values are plain JSON** (dicts, lists, str/int/bool/None). The Redis
+   backend round-trips them through `json`, never `pickle` — unpickling is code
+   execution for anyone who can write to Redis. Loaders convert ORM/Pydantic
+   objects to dicts before returning; callers wanting a set build one from the
+   cached list, which also means no caller can mutate the shared copy (the
+   `ids |= ...` on a cached set that once gave every HOD mark rights on their
+   whole department).
+2. **`invalidate()` is awaited.** It used to be fire-and-forget on Redis, so
+   the delete landed *after* the response — and the lock guard could authorise
+   a write against a lock date that had already changed.
+3. **A load that started before an invalidation never writes its result
+   back.** Each backend keeps a generation counter that `invalidate()` bumps; a
+   loader's result is stored only if the generation is unchanged. Otherwise a
+   slow read racing a write would re-populate the stale value for a full TTL.
+
 Explicit invalidation, not TTL alone, is why `lockDate` can be cached at
-all: it is read on every attendance request but only ever changed through
-`set_lock_date`. The TTL is a backstop for a missed invalidation, not the
-mechanism.
+all. The TTL is a backstop for a missed invalidation, not the mechanism.
 """
 
 from __future__ import annotations
 
 import asyncio
-import pickle
+import json
 import time
 from typing import Any, Awaitable, Callable, Optional
 
 from config import settings
 
 _REDIS_NAMESPACE = "cache:"
+_REDIS_GENERATION = "cachegen"  # outside the namespace, so SCAN never deletes it
 
 
 class _Entry:
@@ -49,12 +64,13 @@ class _Entry:
 
 
 class _MemoryCache:
-    """Single-process fallback — identical behavior to the original design."""
+    """Single-process fallback."""
 
     def __init__(self, ttl: float) -> None:
         self._ttl = ttl
         self._data: dict[str, _Entry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._generation = 0
         self._hits = 0
         self._misses = 0
 
@@ -73,19 +89,30 @@ class _MemoryCache:
             return entry.value
 
         lock = self._locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            entry = self._data.get(key)
-            if self._fresh(entry):
-                self._hits += 1
-                return entry.value
-            self._misses += 1
-            value = await loader()
-            self._data[key] = _Entry(
-                value, time.monotonic() + (ttl if ttl is not None else self._ttl)
-            )
-            return value
+        try:
+            async with lock:
+                entry = self._data.get(key)
+                if self._fresh(entry):
+                    self._hits += 1
+                    return entry.value
+                self._misses += 1
+                generation = self._generation
+                value = await loader()
+                if generation == self._generation:
+                    self._data[key] = _Entry(
+                        value,
+                        time.monotonic() + (ttl if ttl is not None else self._ttl),
+                    )
+                return value
+        finally:
+            # Locks exist only to collapse concurrent misses; once nobody is
+            # waiting the entry goes, so per-(teacher, term) keys can't grow
+            # this dict without bound.
+            if not lock.locked():
+                self._locks.pop(key, None)
 
-    def invalidate(self, *prefixes: str) -> None:
+    async def invalidate(self, *prefixes: str) -> None:
+        self._generation += 1
         if not prefixes:
             self._data.clear()
             return
@@ -124,7 +151,7 @@ class _RedisCache:
         raw = await r.get(rkey)
         if raw is not None:
             self._hits += 1
-            return pickle.loads(raw)
+            return json.loads(raw)
 
         # Best-effort single-flight: whoever wins the lock loads; everyone
         # else waits briefly for the value to appear, then loads anyway if
@@ -137,32 +164,30 @@ class _RedisCache:
                 raw = await r.get(rkey)
                 if raw is not None:
                     self._hits += 1
-                    return pickle.loads(raw)
+                    return json.loads(raw)
 
         self._misses += 1
         try:
+            generation = await r.get(_REDIS_GENERATION)
             value = await loader()
-            await r.set(
-                rkey, pickle.dumps(value), ex=int(ttl if ttl is not None else self._ttl)
-            )
+            # Narrow (not closed) window between this check and the SET; an
+            # invalidation landing inside it is still bounded by the TTL.
+            if await r.get(_REDIS_GENERATION) == generation:
+                await r.set(
+                    rkey,
+                    json.dumps(value),
+                    ex=int(ttl if ttl is not None else self._ttl),
+                )
             return value
         finally:
             if got_lock:
                 await r.delete(lock_key)
 
-    def invalidate(self, *prefixes: str) -> None:
-        # Fire-and-forget: invalidation is a Redis round-trip, but every
-        # existing call site calls `invalidate(...)` synchronously (not
-        # awaited) as part of the in-memory-cache interface. Scheduling the
-        # actual delete as a task keeps that interface unchanged; it lands
-        # within the same event loop tick or two, which is an acceptable
-        # trade-off for these low-value, cheap-to-recompute cached reads.
-        asyncio.create_task(self._invalidate_async(*prefixes))
-
-    async def _invalidate_async(self, *prefixes: str) -> None:
+    async def invalidate(self, *prefixes: str) -> None:
         from services.redis_client import get_redis
 
         r = get_redis()
+        await r.incr(_REDIS_GENERATION)
         patterns = (
             [f"{_REDIS_NAMESPACE}*"]
             if not prefixes
@@ -195,7 +220,10 @@ cache = _RedisCache(ttl=settings.cache_ttl_seconds) if settings.redis_url else _
 
 
 async def cached(key: str, loader: Callable[[], Awaitable[Any]], ttl: float | None = None):
-    """Read `key` from the cache, loading it via `loader` on a miss."""
+    """Read `key` from the cache, loading it via `loader` on a miss.
+
+    `loader` must return plain JSON data — see rule 1 in the module docstring.
+    """
     if not settings.cache_enabled:
         return await loader()
     return await cache.get_or_load(key, loader, ttl)
@@ -209,18 +237,21 @@ SETTINGS = "settings"
 TERMS = "terms"
 COURSES = "courses"
 DIRECTORY = "directory"
-DEPARTMENTS = "departments"
 ASSIGNMENTS = "assignments"
+DEPT_COURSES = "deptcourses"
 
 
-def invalidate(*groups: str) -> None:
-    cache.invalidate(*groups)
+async def invalidate(*groups: str) -> None:
+    await cache.invalidate(*groups)
 
 
-def invalidate_curriculum() -> None:
-    """Departments/programs/semesters/courses all feed the course lookup."""
-    cache.invalidate(COURSES, DEPARTMENTS)
+async def invalidate_curriculum() -> None:
+    """Any curriculum edit changes the course lookup and the HOD department
+    course sets, and a delete cascades through `course_assignment` — so the
+    per-teacher course sets go too, or a deleted assignment would keep granting
+    mark/upload rights until the TTL ran out."""
+    await cache.invalidate(COURSES, DEPT_COURSES, ASSIGNMENTS)
 
 
-def invalidate_all() -> None:
-    cache.invalidate()
+async def invalidate_all() -> None:
+    await cache.invalidate()

@@ -149,6 +149,55 @@ docker compose logs -f api
 Only `caddy` publishes ports to the host (80/443); `api` and `web` are
 reached over the internal compose network only.
 
+## 6. Backups & restore
+
+The attendance records are the point of this system — tamper-evident and
+meant never to be lost. The `postgres_data` volume alone is not a backup: it
+dies with the disk, a bad migration, or a `down -v`. Take real logical dumps.
+
+### Nightly backup
+
+A profile-gated one-shot `backup` service runs `pg_dump` (custom format,
+compressed) into `./backups` on the host and prunes to the most recent
+`BACKUP_KEEP` dumps (default 14):
+
+```bash
+docker compose run --rm backup          # writes ./backups/scas-YYYYMMDD-HHMMSS.dump
+```
+
+Schedule it from the host's crontab — e.g. 02:30 daily:
+
+```cron
+30 2 * * * cd /srv/scas-erp && /usr/bin/docker compose run --rm backup >> /var/log/scas-backup.log 2>&1
+```
+
+`./backups` is gitignored. **Copy it off the box** — the point of a backup is
+surviving the loss of this machine, so sync it to object storage or another
+host (`rclone`, `aws s3 sync`, `scp`, borg…). A dump sitting only on the same
+disk as the database it came from protects against almost nothing.
+
+### Restore
+
+Dumps are custom-format, so restore with `pg_restore`. Into the running stack's
+database (drops and recreates objects — the college's data will be replaced):
+
+```bash
+# Copy the dump where the postgres container can read it, then:
+docker compose exec -T postgres \
+  pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists \
+  < ./backups/scas-YYYYMMDD-HHMMSS.dump
+```
+
+For a clean rebuild (fresh volume): `docker compose down`, remove the
+`postgres_data` volume, `up -d postgres`, wait for healthy, then `pg_restore`
+the dump as above. Do **not** run `migrate`/`seed` first — the dump already
+carries the full schema and data.
+
+> **Drill it.** A backup you have never restored is a hypothesis. Restore the
+> latest dump into a throwaway database (`createdb scratch && pg_restore -d
+> scratch …`) periodically and confirm row counts look right — before you need
+> it for real.
+
 ## Notes
 
 - `DOMAIN` in `.env` needs to be a real domain you control — Caddy's

@@ -76,9 +76,16 @@ def apply_sort(
 
 
 def search_clause(term: str, *columns: Any):
-    """Case-insensitive substring match across `columns` (trigram-indexed)."""
-    needle = f"%{term.strip().lower()}%"
-    return [func.lower(c).like(needle) for c in columns]
+    """Case-insensitive substring match across `columns` (trigram-indexed).
+
+    `%` and `_` in the search text are escaped, so they match themselves — a
+    search for "_" otherwise matched every row.
+    """
+    escaped = (
+        term.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    needle = f"%{escaped}%"
+    return [func.lower(c).like(needle, escape="\\") for c in columns]
 
 
 __all__ = [

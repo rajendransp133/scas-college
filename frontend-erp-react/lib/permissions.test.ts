@@ -167,12 +167,24 @@ describe("roleCapabilities()", () => {
     expect(caps.viewAudit).toBe(false)
   })
 
+  it("viewStudentPii: held by admin/principal/hod, withheld from teacher/att-mgr/rep", () => {
+    // Mirrors backend permissions.py — a teacher or class-rep sees the roster
+    // (roll + name + status) but the server blanks personal fields for them.
+    expect(roleCapabilities("admin").viewStudentPii).toBe(true)
+    expect(roleCapabilities("principal").viewStudentPii).toBe(true)
+    expect(roleCapabilities("hod").viewStudentPii).toBe(true)
+    expect(roleCapabilities("teacher").viewStudentPii).toBe(false)
+    expect(roleCapabilities("attendance-manager").viewStudentPii).toBe(false)
+    expect(roleCapabilities("student-rep").viewStudentPii).toBe(false)
+  })
+
   it("every role produces a capabilities object with all fields defined", () => {
     for (const role of ALL_ROLES) {
       const caps = roleCapabilities(role)
       expect(caps).toMatchObject({
         manageUsers: expect.any(Boolean),
         manageAcademics: expect.any(Boolean),
+        viewStudentPii: expect.any(Boolean),
         editAttendance: expect.any(Boolean),
         deleteAttendance: expect.any(Boolean),
         overrideLock: expect.any(Boolean),

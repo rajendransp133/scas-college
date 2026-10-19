@@ -13,6 +13,7 @@ import { useAuth } from "@/lib/permissions";
 import { EMPTY_ARRAY } from "@/lib/api";
 import { semesterInSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { todayLocal } from "@/lib/date";
 
 export interface OwnClass {
   courseId: string;
@@ -25,7 +26,6 @@ export interface OwnClass {
   markedToday: boolean;
 }
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
 
 /**
  * Classes assigned to the logged-in account's linked teacher for the current
@@ -39,15 +39,18 @@ export function useOwnClasses(): OwnClass[] {
   const { data: courses = EMPTY_ARRAY } = useCourses();
   const { data: programs = EMPTY_ARRAY } = usePrograms();
   const { data: terms = EMPTY_ARRAY } = useTerms();
-  const today = todayISO();
-  // Today's sessions for the term drive the "Today ✓" marker.
-  // Today only, so a single generous page covers every class in the college.
+  const today = todayLocal();
+  const { ownCourseIds, user } = useAuth();
+  // Today's sessions for the term drive the "Today ✓" marker. Only fetched for
+  // an account that has classes of its own (a linked teacher) — this hook runs
+  // on the dashboard for every role, and admins/reps have no cards to tick.
+  // The server scopes the list to what the caller may read, so for a teacher
+  // it is just their own sessions today.
   const { data: todayPage } = useAttendance(
     { termId: currentTermId, date: today, pageSize: 200 },
-    !!currentTermId,
+    !!currentTermId && !!user?.teacherId,
   );
   const todaySessions = useMemo(() => todayPage?.items ?? [], [todayPage]);
-  const { ownCourseIds } = useAuth();
 
   return useMemo(() => {
     const ownIds = ownCourseIds(currentTermId);

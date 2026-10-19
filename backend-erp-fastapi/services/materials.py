@@ -4,15 +4,21 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from deps import own_course_ids
+from enums.UserRole import UserRoleEnum
 from ids import new_id
-from models import Course, Program, Semester, StudyMaterial, User
+from models import Course, Semester, StudyMaterial, User
 from permissions import role_capabilities
 from services.pagination import PageParams, paginate, search_clause
-from services.util import not_found, now_utc
+from services.util import commit_or_raise, not_found, now_utc
+
+_CONFLICTS = {
+    "study_material_course_id_fkey": "Course not found",
+    "study_material_term_id_fkey": "Term not found",
+}
 
 MATERIAL_URL_MAX_LEN = 2048
 
@@ -23,6 +29,7 @@ MATERIAL_URL_MAX_LEN = 2048
 from services.scope import (  # noqa: E402
     class_course_ids as _class_course_ids,
     dept_course_ids as _dept_course_ids,
+    hod_department_id,
 )
 
 
@@ -36,13 +43,15 @@ async def visible_course_ids(
     ids: set[str] = set()
     if user.teacher_id and term_id:
         ids |= await own_course_ids(db, user, term_id)
-    if user.role.value == "hod" and user.teacher_id:
-        from models import Teacher
-
-        teacher = await db.get(Teacher, user.teacher_id)
-        if teacher and teacher.department_id:
-            ids |= await _dept_course_ids(db, teacher.department_id)
-    if user.role.value == "student-rep" and user.program_id and user.class_semester:
+    if user.role == UserRoleEnum.HOD:
+        department_id = await hod_department_id(db, user)
+        if department_id:
+            ids |= await _dept_course_ids(db, department_id)
+    if (
+        user.role == UserRoleEnum.STUDENT_REP
+        and user.program_id
+        and user.class_semester
+    ):
         ids |= await _class_course_ids(db, user.program_id, user.class_semester)
     return ids
 
@@ -67,7 +76,10 @@ async def list_materials(
         stmt = stmt.where(StudyMaterial.course_id == course_id)
     if program_id:
         allowed = await _class_course_ids_for_program(db, program_id, semester)
-        stmt = stmt.where(StudyMaterial.course_id.in_(allowed or {"__none__"}))
+        # Empty → impossible predicate, never `in_(set())` (see services/scope.py).
+        stmt = stmt.where(
+            StudyMaterial.course_id.in_(allowed) if allowed else false()
+        )
     if search and search.strip():
         stmt = stmt.where(
             or_(*search_clause(search, StudyMaterial.title, StudyMaterial.url))
@@ -148,7 +160,7 @@ async def create_material(
         uploaded_at=now_utc(),
     )
     db.add(material)
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(material)
     return material
 

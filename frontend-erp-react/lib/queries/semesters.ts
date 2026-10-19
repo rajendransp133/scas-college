@@ -26,6 +26,7 @@ function invalidateCurriculum(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["semesters"] })
   qc.invalidateQueries({ queryKey: ["programs"] })
   qc.invalidateQueries({ queryKey: qk.courses })
+  qc.invalidateQueries({ queryKey: ["stats"] })
 }
 
 export function useAddSemester() {

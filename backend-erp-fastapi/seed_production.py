@@ -45,6 +45,7 @@ import asyncio
 import csv
 import os
 import secrets
+import sys
 from datetime import date
 
 from sqlalchemy import func, select
@@ -413,11 +414,14 @@ async def run() -> None:
         # `Student` is in the list because this script now writes to it: the
         # guard should cover every table it touches, so a re-run fails with
         # this clear message rather than 583 primary-key collisions.
+        # Users are deliberately *not* checked: reset_db.py leaves one admin
+        # behind, and the admin/principal creation below is already guarded.
         for model, label in ((Department, "departments"), (Teacher, "teachers"),
-                             (Program, "programs"), (Student, "students")):
+                             (Program, "programs"), (Student, "students"),
+                             (AcademicTerm, "terms")):
             n = await db.scalar(select(func.count()).select_from(model))
             if n:
-                raise RuntimeError(
+                raise AlreadySeeded(
                     f"Refusing to seed: {n} {label} already exist. This script "
                     "only initialises an empty database (run reset_db.py first "
                     "in dev if you mean to start over)."
@@ -542,17 +546,22 @@ async def run() -> None:
                 semester="", email=ADMIN_EMAIL, password=pw,
             ))
 
+        # Credentials are written *before* the commit. The other way round, a
+        # credentials path the process can't write (a read-only bind mount, a
+        # non-root container user) committed every account and then lost all
+        # of their random passwords — with the empty-database guard above
+        # refusing a re-run. Now that failure aborts with nothing committed.
+        with open(CREDENTIALS_FILE, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "role", "name", "department", "program", "semester",
+                "email", "password",
+            ])
+            w.writeheader()
+            w.writerows(credentials)
+
         await db.commit()
 
     await engine.dispose()
-
-    with open(CREDENTIALS_FILE, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=[
-            "role", "name", "department", "program", "semester",
-            "email", "password",
-        ])
-        w.writeheader()
-        w.writerows(credentials)
 
     n_teachers = len(TEACHERS)
     n_hods = sum(1 for t in TEACHERS if t[4])
@@ -564,5 +573,18 @@ async def run() -> None:
     print(f"Credentials written to {CREDENTIALS_FILE} — distribute, then delete it.")
 
 
+class AlreadySeeded(RuntimeError):
+    """The database already holds data — not a failure, but nothing to do."""
+
+
+# Exit code for "already populated", distinct from 1 (a real failure), so the
+# local stack's bootstrap can treat a re-run as success without also swallowing
+# a broken seed (see docker-compose.local.yml).
+EXIT_ALREADY_SEEDED = 3
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except AlreadySeeded as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(EXIT_ALREADY_SEEDED)

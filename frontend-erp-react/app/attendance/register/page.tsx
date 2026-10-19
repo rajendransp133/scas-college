@@ -202,22 +202,23 @@ export default function RegisterPage() {
   );
 
   // Each student's record per session column (null = no record). The full
-  // record is kept so corrected cells can show their original status.
-  const rows = useMemo(
-    () =>
-      roster.map((s) => {
-        const cells = sessions.map(
-          (sess) => sess.records.find((r) => r.studentId === s.id) ?? null,
-        );
+  // record is kept so corrected cells can show their original status. Records
+  // are indexed per session once, so building the matrix is students × sessions
+  // lookups rather than a scan of every session's records for every cell.
+  const rows = useMemo(() => {
+    const bySession = sessions.map(
+      (sess) => new Map(sess.records.map((r) => [r.studentId, r])),
+    );
+    return roster.map((s) => {
+        const cells = bySession.map((records) => records.get(s.id) ?? null);
         const t = tally(
           cells
             .filter((c): c is NonNullable<typeof c> => !!c)
             .map((c) => c.status),
         );
         return { student: s, cells, ...t, pct: pct(t.attended, t.held) };
-      }),
-    [roster, sessions],
-  );
+      });
+  }, [roster, sessions]);
 
   const userName = useMemo(
     () => Object.fromEntries(directory.map((u) => [u.id, u.name])),

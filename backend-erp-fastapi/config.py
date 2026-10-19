@@ -5,13 +5,16 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_DEV_DATABASE_URL = "postgresql+asyncpg://postgres:1234@localhost/erp_scas"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
     # Async runtime driver (asyncpg). Alembic derives the sync URL below.
-    database_url: str = "postgresql+asyncpg://postgres:1234@localhost/erp_scas"
+    database_url: str = _DEV_DATABASE_URL
 
     # "development" (default) never hard-fails on an insecure default secret;
     # "production" does — see the startup check in main.py.
@@ -31,6 +34,16 @@ class Settings(BaseSettings):
     db_pool_size: int = 8
     db_max_overflow: int = 4
     db_pool_timeout: int = 30
+
+    # Server-side guards against a runaway query or an abandoned transaction
+    # holding a pool connection (and its locks) indefinitely. Milliseconds;
+    # 0 disables. Applied per connection in database/connection.py.
+    db_statement_timeout_ms: int = 30_000
+    db_lock_timeout_ms: int = 10_000
+    db_idle_in_transaction_timeout_ms: int = 60_000
+
+    # IANA zone the college runs in — what "today" means to every user.
+    college_timezone: str = "Asia/Kolkata"
 
     # --- server-side caching ---
     # TTL for the small, near-static reads (settings, terms, course lookup).
@@ -68,7 +81,7 @@ _INSECURE_JWT_SECRETS = {"", "dev-secret-change-me"}
 
 
 def assert_production_ready(s: Settings = settings) -> None:
-    """Fail fast rather than boot with a guessable JWT signing key.
+    """Fail fast rather than boot with a guessable JWT key or dev database URL.
 
     Only enforced when `environment=production` so the seeded dev/demo
     workflow keeps working unmodified with no `.env` changes.
@@ -77,6 +90,11 @@ def assert_production_ready(s: Settings = settings) -> None:
         raise RuntimeError(
             "JWT_SECRET is unset or using the insecure default while "
             "ENVIRONMENT=production. Set a real secret before starting."
+        )
+    if s.environment == "production" and s.database_url == _DEV_DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL is unset (dev default with a guessable password) "
+            "while ENVIRONMENT=production. Set the real database URL."
         )
 
 

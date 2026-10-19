@@ -29,8 +29,9 @@ export function MaterialLinkThumb({
       )}
     >
       {showImage ? (
-        // eslint-disable-next-line @next/next/no-img-element -- remote host,
-        // unknown at build time; next/image would need a domain allowlist.
+        // Remote host, unknown at build time; next/image would need a domain
+        // allowlist. (The directive must be the line directly above <img>.)
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           src={preview.thumbnailUrl}
           alt=""

@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { EMPTY_ARRAY, errMsg } from "@/lib/api";
+import { ApiError, EMPTY_ARRAY, errMsg } from "@/lib/api";
 import {
   useStudentBreakdown,
   useCourses,
@@ -28,6 +28,7 @@ import {
 } from "@/lib/queries";
 import { useAuth } from "@/lib/permissions";
 import { DetailPageSkeleton } from "@/components/ui/card-skeleton";
+import { QueryError } from "@/components/query-error";
 import { DEFAULT_MIN_ATTENDANCE, pct, pctColor } from "@/lib/attendance";
 import { StudentFormDialog } from "@/components/students/student-form-dialog";
 import { PageHeader } from "@/components/page-header";
@@ -67,7 +68,7 @@ function initials(name: string) {
 
 export default function StudentDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const { data: student, isLoading } = useStudent(id);
+  const { data: student, isLoading, error, refetch } = useStudent(id);
   const { data: departments = EMPTY_ARRAY } = useDepartments();
   const { data: programs = EMPTY_ARRAY } = usePrograms();
   const { data: courses = EMPTY_ARRAY } = useCourses();
@@ -96,6 +97,17 @@ export default function StudentDetailPage() {
       <div className="flex flex-col gap-4">
         <BackLink />
         <DetailPageSkeleton />
+      </div>
+    );
+  }
+
+  // A 404 is "not found"; anything else (403, 500, network) is a failure to
+  // load, not evidence the student is gone.
+  if (!student && error && !(error instanceof ApiError && error.status === 404)) {
+    return (
+      <div className="flex flex-col gap-4">
+        <BackLink />
+        <QueryError error={error} onRetry={() => void refetch()} />
       </div>
     );
   }

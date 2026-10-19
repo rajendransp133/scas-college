@@ -21,7 +21,19 @@ engine = create_async_engine(
     # Recycle before Postgres' idle timeout so a dead socket is never handed out.
     pool_recycle=1800,
     pool_pre_ping=True,
-    connect_args={"server_settings": {"application_name": "scas-erp-api"}},
+    connect_args={
+        "server_settings": {
+            "application_name": "scas-erp-api",
+            # Per-connection guards: a runaway query, a lock wait, or a
+            # transaction a crashed request left open can no longer pin a pool
+            # connection (and its row locks) indefinitely.
+            "statement_timeout": str(settings.db_statement_timeout_ms),
+            "lock_timeout": str(settings.db_lock_timeout_ms),
+            "idle_in_transaction_session_timeout": str(
+                settings.db_idle_in_transaction_timeout_ms
+            ),
+        }
+    },
 )
 async_session = async_sessionmaker(
     engine, expire_on_commit=False, class_=AsyncSession

@@ -25,19 +25,26 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(subject: str, epoch: int = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.access_token_expire_minutes
     )
-    payload = {"sub": subject, "exp": expire}
+    # `epoch` is the account's token_epoch at issue time; get_current_user
+    # rejects the token once the account's value moves past it.
+    payload = {"sub": subject, "epoch": epoch, "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def decode_token(token: str) -> Optional[str]:
+def decode_token(token: str) -> Optional[tuple[str, int]]:
+    """Returns `(subject, epoch)` or None. Legacy tokens with no `epoch` claim
+    read as epoch 0, which matches a never-rotated account's default."""
     try:
         payload = jwt.decode(
             token, settings.jwt_secret, algorithms=[settings.jwt_algorithm]
         )
-        return payload.get("sub")
+        sub = payload.get("sub")
+        if not sub:
+            return None
+        return sub, int(payload.get("epoch", 0))
     except JWTError:
         return None

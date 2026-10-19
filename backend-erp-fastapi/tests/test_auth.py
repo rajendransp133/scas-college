@@ -3,7 +3,6 @@ rate limiter (10/minute, `main.py` + `rate_limit.py`)."""
 
 from __future__ import annotations
 
-import pytest
 
 from security import create_access_token, decode_token
 
@@ -62,8 +61,13 @@ async def test_login_email_is_case_insensitive(client, admin_creds):
 
 
 def test_jwt_round_trip():
-    token = create_access_token("usr-123")
-    assert decode_token(token) == "usr-123"
+    token = create_access_token("usr-123", epoch=0)
+    assert decode_token(token) == ("usr-123", 0)
+
+
+def test_jwt_carries_the_token_epoch():
+    token = create_access_token("usr-123", epoch=7)
+    assert decode_token(token) == ("usr-123", 7)
 
 
 def test_jwt_garbage_token_decodes_to_none():

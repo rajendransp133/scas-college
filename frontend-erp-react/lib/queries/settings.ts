@@ -40,7 +40,9 @@ export function useSetLockDate() {
       apiPut<{ lockDate: string | null }>("/lock-date", { date }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.settings })
-      qc.invalidateQueries({ queryKey: qk.audit() })
+      qc.invalidateQueries({ queryKey: ["audit"] })
+      // The lock state tile on the dashboard / close-out checklist.
+      qc.invalidateQueries({ queryKey: ["stats"] })
     },
   })
 }

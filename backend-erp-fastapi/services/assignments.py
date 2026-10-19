@@ -9,7 +9,14 @@ import services.cache as cache_keys
 from ids import new_id
 from models import CourseAssignment
 from services.cache import invalidate
-from services.util import not_found
+from services.util import commit_or_raise, not_found
+
+_CONFLICTS = {
+    "uq_assignment_triple": "This teacher is already assigned to the course",
+    "course_assignment_course_id_fkey": "Course not found",
+    "course_assignment_teacher_id_fkey": "Teacher not found",
+    "course_assignment_term_id_fkey": "Term not found",
+}
 
 
 async def list_assignments(
@@ -42,10 +49,10 @@ async def assign_teacher(
         term_id=term_id,
     )
     db.add(asg)
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(asg)
     # Teachers' "my courses" sets are cached per (teacher, term).
-    invalidate(cache_keys.ASSIGNMENTS)
+    await invalidate(cache_keys.ASSIGNMENTS)
     return asg
 
 
@@ -64,4 +71,4 @@ async def unassign_teacher(
         raise not_found("Assignment not found")
     await db.delete(found)
     await db.commit()
-    invalidate(cache_keys.ASSIGNMENTS)
+    await invalidate(cache_keys.ASSIGNMENTS)

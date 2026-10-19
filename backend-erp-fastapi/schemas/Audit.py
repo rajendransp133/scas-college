@@ -7,7 +7,7 @@ from pydantic import Field
 
 from enums.AttendanceStatus import AttendanceStatusEnum
 from enums.AuditAction import AuditActionEnum
-from schemas.base import CamelModel
+from schemas.base import CamelModel, IsoDate
 
 
 class AuditResponse(CamelModel):
@@ -31,4 +31,4 @@ class AuditResponse(CamelModel):
 
 
 class LockDatePayload(CamelModel):
-    date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    date: Optional[IsoDate] = None

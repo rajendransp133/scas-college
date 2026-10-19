@@ -58,7 +58,7 @@ class Teacher(Base, Repr):
 
     # Orphan (not delete) teachers when their department is removed.
     department_id: Mapped[str | None] = mapped_column(
-        ForeignKey("department.id", ondelete="SET NULL"), nullable=True, index=True
+        ForeignKey("department.id", ondelete="SET NULL"), nullable=True
     )
 
     department: Mapped["Department | None"] = relationship(back_populates="teachers")

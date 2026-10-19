@@ -3,14 +3,24 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import or_, select, update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import services.cache as cache_keys
 from ids import new_id
 from models import Teacher
+from services.cache import invalidate
 from schemas.Teacher import TeacherCreate, TeacherUpdate
 from services.pagination import PageParams, apply_sort, paginate, search_clause
-from services.util import apply_updates, conflict, not_found
+from services.util import apply_updates, commit_or_raise, not_found
+
+_CONFLICTS = {
+    "teacher_employee_id_key": "Employee id already exists",
+    "teacher_email_key": "A teacher with this email already exists",
+    "teacher_department_id_fkey": "Department not found",
+    "uq_one_hod_per_department": (
+        "This department's HOD changed at the same moment — reload and try again"
+    ),
+}
 
 SORTABLE = {
     "name": Teacher.name,
@@ -80,11 +90,7 @@ async def create_teacher(db: AsyncSession, data: TeacherCreate) -> Teacher:
         await _demote_other_hods(db, data.department_id, keep_id=None)
     teacher = Teacher(id=new_id("tch"), **data.model_dump(by_alias=False))
     db.add(teacher)
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise conflict("Employee id or email already exists")
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)
     return teacher
 
@@ -98,11 +104,7 @@ async def update_teacher(
     if fields.get("is_hod"):
         await _demote_other_hods(db, target_dept, keep_id=teacher_id)
     apply_updates(teacher, data)
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise conflict("Employee id or email already exists")
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)
     return teacher
 
@@ -112,6 +114,9 @@ async def delete_teacher(db: AsyncSession, teacher_id: str) -> None:
     teacher = await get_teacher(db, teacher_id)
     await db.delete(teacher)
     await db.commit()
+    # The cascade took this teacher's assignments with it; their cached
+    # own-course set would otherwise keep granting mark/upload rights.
+    await invalidate(cache_keys.ASSIGNMENTS)
 
 
 async def set_hod(db: AsyncSession, teacher_id: str, is_hod: bool) -> Teacher:
@@ -119,6 +124,6 @@ async def set_hod(db: AsyncSession, teacher_id: str, is_hod: bool) -> Teacher:
     if is_hod:
         await _demote_other_hods(db, teacher.department_id, keep_id=teacher_id)
     teacher.is_hod = is_hod
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)
     return teacher

@@ -17,7 +17,7 @@ the two is what the oversight page flags.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import Select, and_, func, or_, select
@@ -37,8 +37,19 @@ from models import (
     Teacher,
 )
 from services.pagination import PageParams, search_clause
+from services.util import today_local
 
 PRESENT_EQUIVALENT = (St.PRESENT, St.LATE)
+
+# Every audit action that rewrites a saved register. Counting EDIT alone let
+# the stronger cover — dropping a record (which also erases its
+# `original_status`) or deleting a whole session — stay off the oversight
+# cards entirely.
+CORRECTION_ACTIONS = (
+    AuditActionEnum.EDIT,
+    AuditActionEnum.REMOVE_RECORD,
+    AuditActionEnum.DELETE_SESSION,
+)
 
 # The "as-marked" status: what was originally entered, before any correction.
 _ORIGINAL = func.coalesce(
@@ -236,10 +247,21 @@ async def student_summary(
 
 
 async def student_course_breakdown(
-    db: AsyncSession, student_id: str, term_id: Optional[str] = None
+    db: AsyncSession,
+    student_id: str,
+    term_id: Optional[str] = None,
+    allowed_course_ids: Optional[set[str]] = None,
 ) -> list[dict]:
     """Per-course tally for one student — the summary expand row and the
-    student detail page's attendance card."""
+    student detail page's attendance card.
+
+    `allowed_course_ids` is the caller's read scope (`None` = unrestricted).
+    Being allowed to see the *student* is not being allowed to see every
+    course they sit: a teacher reaches the student through one class and must
+    not read the student's attendance in the others.
+    """
+    if allowed_course_ids is not None and not allowed_course_ids:
+        return []
     stmt = (
         select(AttendanceSession.course_id, *_tally_columns())
         .select_from(AttendanceRecord)
@@ -249,6 +271,8 @@ async def student_course_breakdown(
     )
     if term_id:
         stmt = stmt.where(AttendanceSession.term_id == term_id)
+    if allowed_course_ids is not None:
+        stmt = stmt.where(AttendanceSession.course_id.in_(allowed_course_ids))
     rows = await db.execute(stmt)
     return [
         {
@@ -350,7 +374,7 @@ async def correction_red_flags(
 
     by_user_stmt = (
         select(AuditEntry.user_id, func.count().label("n"))
-        .where(AuditEntry.action == AuditActionEnum.EDIT)
+        .where(AuditEntry.action.in_(CORRECTION_ACTIONS))
         .group_by(AuditEntry.user_id)
         .order_by(func.count().desc())
         .limit(20)
@@ -377,7 +401,7 @@ async def dashboard_stats(
 
     `department_id` scopes the whole payload for HODs.
     """
-    today = date.today().isoformat()
+    today = today_local().isoformat()
     # When the edit was *made*, not which day's register it touched. AuditEntry
     # carries both: `at` is the timestamp, `date` is the attendance date being
     # corrected. Filtering on `date` counted "corrections to sessions held this
@@ -421,10 +445,12 @@ async def dashboard_stats(
 
     # --- integrity signals ---
     corrections_q = select(func.count()).select_from(AuditEntry).where(
-        AuditEntry.action == AuditActionEnum.EDIT, AuditEntry.at >= edited_since
+        AuditEntry.action.in_(CORRECTION_ACTIONS), AuditEntry.at >= edited_since
     )
     if term_id:
         corrections_q = corrections_q.where(AuditEntry.term_id == term_id)
+    if department_id:
+        corrections_q = corrections_q.where(AuditEntry.course_id.in_(dept_courses))
     corrections_this_week = (await db.execute(corrections_q)).scalar_one()
 
     shortfall = await shortfall_count(db, term_id, department_id, min_pct)

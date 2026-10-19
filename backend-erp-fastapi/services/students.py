@@ -3,17 +3,17 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from enums.UserRole import UserRoleEnum
 from ids import new_id
-from models import Student, User
+from models import Program, Semester, Student, User
 from schemas.Student import StudentCreate, StudentUpdate
 import services.cache as cache_keys
+from services.audit import guard_attendance_cascade
 from services.cache import invalidate
 from services.pagination import PageParams, apply_sort, paginate, search_clause
-from services.util import apply_updates, conflict, not_found
+from services.util import apply_updates, commit_or_raise, not_found, unprocessable
 
 # API sort field → column. Anything not listed is rejected (falls back to roll).
 SORTABLE = {
@@ -146,14 +146,37 @@ async def get_student(db: AsyncSession, student_id: str) -> Student:
     return st
 
 
+_CONFLICTS = {
+    "student_roll_number_key": "Roll number already exists",
+    "student_department_id_fkey": "Department not found",
+    "student_program_id_fkey": "Program not found",
+}
+
+
+async def _assert_program_in_department(
+    db: AsyncSession, department_id: Optional[str], program_id: Optional[str]
+) -> None:
+    """A student's department must be their program's department.
+
+    The two are stored separately, and HOD read scope filters students on
+    `Student.department_id` while course scope goes through
+    `Program.department_id` — so a mismatch shows the student to one HOD and
+    their attendance to another.
+    """
+    if not department_id or not program_id:
+        return
+    program = await db.get(Program, program_id)
+    if program is None:
+        raise unprocessable("Program not found")
+    if program.department_id != department_id:
+        raise unprocessable("The program does not belong to that department")
+
+
 async def create_student(db: AsyncSession, data: StudentCreate) -> Student:
+    await _assert_program_in_department(db, data.department_id, data.program_id)
     st = Student(id=new_id("stu"), **data.model_dump(by_alias=False))
     db.add(st)
-    try:
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise conflict("Roll number already exists")
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(st)
     return st
 
@@ -162,15 +185,28 @@ async def update_student(
     db: AsyncSession, student_id: str, data: StudentUpdate
 ) -> Student:
     st = await get_student(db, student_id)
+    fields = data.model_dump(exclude_unset=True, by_alias=False)
+    if "department_id" in fields or "program_id" in fields:
+        await _assert_program_in_department(
+            db,
+            fields.get("department_id", st.department_id),
+            fields.get("program_id", st.program_id),
+        )
     apply_updates(st, data)
-    await db.commit()
+    await commit_or_raise(db, _CONFLICTS)
     await db.refresh(st)
     return st
 
 
-async def delete_student(db: AsyncSession, student_id: str) -> None:
-    # Hard delete; attendance records are removed via FK cascade.
+async def delete_student(db: AsyncSession, user: User, student_id: str) -> None:
+    """Hard delete; attendance records go with it via FK cascade — so the
+    removal is audited and refused under the lock (see
+    `services.audit.guard_attendance_cascade`). Deactivating is the
+    history-preserving alternative."""
     st = await get_student(db, student_id)
+    await guard_attendance_cascade(
+        db, user, label=f"Student {st.roll_number}", student_id=st.id
+    )
     await db.delete(st)
     await db.commit()
 
@@ -251,18 +287,44 @@ async def _delete_rep_accounts(db: AsyncSession, vacated: set[tuple[str, int]]) 
     """
     removed = 0
     for program_id, semester in vacated:
-        rep = await db.scalar(
+        # Every match, not the first: `uq_user_rep_class` now makes duplicates
+        # impossible, but rows written before it existed shouldn't survive a
+        # rollover half-retired.
+        reps = await db.scalars(
             select(User).where(
                 User.role == UserRoleEnum.STUDENT_REP,
                 User.program_id == program_id,
                 User.class_semester == semester,
             )
         )
-        if rep is None:
-            continue  # class never had a rep account — nothing to retire.
-        await db.delete(rep)
-        removed += 1
+        for rep in reps.all():
+            await db.delete(rep)
+            removed += 1
     return removed
+
+
+async def _assert_none_in_final_semester(db: AsyncSession, moving: list[Student]) -> None:
+    """Promotion stops at the program's last semester — past it there is no
+    curriculum, no roster and no register, so the student would quietly drop
+    out of everything. Those students are graduated instead."""
+    program_ids = {st.program_id for st in moving if st.program_id}
+    if not program_ids:
+        return
+    rows = await db.execute(
+        select(Semester.program_id, func.max(Semester.number))
+        .where(Semester.program_id.in_(program_ids))
+        .group_by(Semester.program_id)
+    )
+    last = dict(rows.all())
+    stuck = [
+        st for st in moving
+        if st.program_id in last and st.current_semester >= last[st.program_id]
+    ]
+    if stuck:
+        raise unprocessable(
+            f"{len(stuck)} student(s) are already in their program's final "
+            "semester — graduate them instead of promoting"
+        )
 
 
 async def promote_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
@@ -277,6 +339,7 @@ async def promote_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
         return 0, 0
     rows = await db.execute(select(Student).where(Student.id.in_(ids)))
     moving = [st for st in rows.scalars().all() if st.is_active and not st.graduated]
+    await _assert_none_in_final_semester(db, moving)
 
     # Decide which classes are emptying *before* touching the semester numbers.
     vacated = await _fully_vacated(db, moving)
@@ -287,7 +350,7 @@ async def promote_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
     count = len(moving)
     await db.commit()
     if removed:
-        invalidate(cache_keys.DIRECTORY)
+        await invalidate(cache_keys.DIRECTORY)
     return count, removed
 
 
@@ -315,5 +378,5 @@ async def graduate_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]
     count = len(leaving)
     await db.commit()
     if removed:
-        invalidate(cache_keys.DIRECTORY)
+        await invalidate(cache_keys.DIRECTORY)
     return count, removed

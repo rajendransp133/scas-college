@@ -46,7 +46,9 @@ services:
     # Published so you can point pgAdmin/DBeaver/psql at localhost:5432 while
     # developing. Remove this block if you'd rather keep it internal-only.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback only: the local password is a well-known default, so the
+      # database must not be reachable from the rest of the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
   redis:
     image: redis:7-alpine
@@ -79,7 +81,9 @@ services:
         echo "==> applying migrations"
         python -m alembic upgrade head
         echo "==> seeding (skipped if the database already has data)"
-        python seed_production.py || echo "==> seed skipped — database already populated"
+        # Exit 3 = already populated (a re-run of `up`); anything else is a
+        # real failure and must stop the stack instead of being echoed away.
+        python seed_production.py || { rc=$$?; [ $$rc -eq 3 ] && echo "==> seed skipped — database already populated" || exit $$rc; }
     environment:
       DATABASE_URL: *db-url
       ENVIRONMENT: ${ENVIRONMENT:-production}
@@ -125,8 +129,9 @@ services:
     expose:
       - "8000"
     healthcheck:
+      # Readiness (DB + Redis), not liveness — a 503 raises HTTPError → exit 1.
       # No curl in python:3.12-slim; urllib is always there.
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 5

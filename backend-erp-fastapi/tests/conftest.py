@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import itertools
 import sys
-import uuid
 from pathlib import Path
 
 import httpx
@@ -132,7 +131,7 @@ async def _isolate(async_engine):
     # strings shared by every test — without this a value cached by one test
     # (e.g. a lock date) leaks into the next, which reads a truncated DB but
     # a stale cache.
-    invalidate_all()
+    await invalidate_all()
     # slowapi's in-memory storage is a module-level singleton too: without a
     # reset, tests earlier in the session eat into every later test's
     # 10/minute `/auth/login` budget.

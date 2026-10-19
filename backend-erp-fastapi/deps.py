@@ -10,8 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_db
-from models import AppSettings, CourseAssignment, User
-from models.AppSettings import SETTINGS_ID
+from models import CourseAssignment, User
 from permissions import Capabilities, role_capabilities
 from security import decode_token
 
@@ -32,15 +31,27 @@ async def get_current_user(
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    sub = decode_token(cred.credentials)
-    if not sub:
+    decoded = decode_token(cred.credentials)
+    if decoded is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
+    sub, epoch = decoded
     user = await db.get(User, sub)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
+        )
+    # A disabled account keeps no access, even with a still-valid token.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Account is disabled"
+        )
+    # Reject a token minted at any other epoch than the account's current one —
+    # this is what makes a password change / disable cut off outstanding tokens.
+    if epoch != user.token_epoch:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked"
         )
     # Stashed for the request-logging middleware in main.py.
     request.state.user_id = user.id
@@ -81,16 +92,20 @@ async def own_course_ids(db: AsyncSession, user: User, term_id: str) -> set[str]
     if not user.teacher_id:
         return set()
 
-    async def load() -> set[str]:
+    async def load() -> list[str]:
         rows = await db.execute(
             select(CourseAssignment.course_id).where(
                 CourseAssignment.teacher_id == user.teacher_id,
                 CourseAssignment.term_id == term_id,
             )
         )
-        return {r[0] for r in rows.all()}
+        return sorted(r[0] for r in rows.all())
 
-    return await cached(f"{cache_keys.ASSIGNMENTS}:own:{user.teacher_id}:{term_id}", load)
+    # A fresh set per call: the cached value is shared, and callers union into
+    # what they get back (an HOD's scope adds the department's courses).
+    return set(
+        await cached(f"{cache_keys.ASSIGNMENTS}:own:{user.teacher_id}:{term_id}", load)
+    )
 
 
 async def ensure_can_mark(
