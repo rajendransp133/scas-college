@@ -147,11 +147,11 @@ services:
         # Build-time, not runtime: Next.js inlines NEXT_PUBLIC_* into the
         # client bundle. Changing APP_PORT means rebuilding `web`, not just
         # restarting it.
-        NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:${APP_PORT:-8080}}/api
+        NEXT_PUBLIC_API_URL: /api
     image: scas-erp-web:local
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: ${PUBLIC_URL:-http://localhost:${APP_PORT:-8080}}/api
+      NEXT_PUBLIC_API_URL: /api
     depends_on:
       - api
     expose:
