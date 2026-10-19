@@ -116,3 +116,6 @@ desktop.ini
 # path with a slash is otherwise anchored to this directory only.
 **/.claude/settings.local.json
 **/.claude/*.lock
+
+# Plaintext first-login passwords written by seed_production.py — never commit.
+seed_credentials.csv
