@@ -16,6 +16,10 @@
 # Real login passwords for every seeded account, written by seed_production.py.
 seed_credentials.csv
 
+# Database dumps (pg_dump) written by the `backup` compose service. Real college
+# data — copy them off-box, never into git.
+backups/
+
 # ---------------------------------------------------------------------------
 # Real student data — never commit
 # ---------------------------------------------------------------------------
@@ -25,7 +29,9 @@ seed_credentials.csv
 # students.csv from the spreadsheets with tools/build_students_csv.py.
 *.xlsx
 *.xls
-students.csv
+# Exception: backend-erp-fastapi/students.csv (names + register numbers only, no
+# DOB/address/phone) IS tracked, because seed_production.py reads it at deploy.
+!backend-erp-fastapi/students.csv
 students-rejected.csv
 
 # ---------------------------------------------------------------------------
@@ -60,6 +66,11 @@ next-env.d.ts
 .vercel/
 coverage/
 .swc/
+
+# Playwright e2e artifacts (generated on each run).
+playwright-report/
+test-results/
+.playwright/
 
 __pycache__/
 *.py[cod]
