@@ -13,8 +13,7 @@
 !.env.example
 !.env*.example
 
-# Real login passwords for every seeded account, written by seed_production.py.
-seed_credentials.csv
+
 
 # Database dumps (pg_dump) written by the `backup` compose service. Real college
 # data — copy them off-box, never into git.
