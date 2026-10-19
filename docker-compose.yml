@@ -124,6 +124,10 @@ services:
     image: scas-erp-api:latest
     command: ["python", "seed_production.py"]
     restart: "no"
+    # The image runs as the unprivileged `app` user, which can't write the
+    # credentials CSV into the bind-mounted (root-owned) project directory.
+    # This one-shot job is the only thing that needs to.
+    user: root
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       ENVIRONMENT: ${ENVIRONMENT:-production}
