@@ -111,7 +111,7 @@ export default function AuditPage() {
       </Link>
 
       <PageHeader
-        title="Attendance Oversight"
+        title={can.viewAudit ? "Attendance Oversight" : "Attendance Lock"}
         description={
           can.viewAudit
             ? "Spot suspicious changes and freeze finalized records."
@@ -247,8 +247,8 @@ export default function AuditPage() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirmLock === "lock"
-                ? `Attendance on or before ${lockInput} becomes read-only for teachers and HODs. Admins, the principal and attendance managers keep audited correction rights`
-                : `Records on or before ${lockDate} become editable again by roles with edit rights. The unlock is recorded in the change history.`}
+                ? `Attendance on or before ${lockInput} becomes read-only for teachers and HODs. Attendance managers can still correct it`
+                : `Records on or before ${lockDate} become editable again by roles with edit rights.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

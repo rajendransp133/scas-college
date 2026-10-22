@@ -441,7 +441,7 @@ export default function AttendancePage() {
         <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           <Lock size={14} />
           {can.overrideLock
-            ? `Attendance up to ${lockDate} is locked — you're editing frozen records; every change is audited.`
+            ? `Attendance up to ${lockDate} is locked — you're editing frozen records; every change is stamped with your name.`
             : `Attendance up to ${lockDate} is locked — records for this date can't be changed.`}
         </div>
       )}

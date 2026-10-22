@@ -26,8 +26,21 @@ SORTABLE = {
 }
 
 
+#: What a non-admin sees in place of an admin account's name. Admin accounts
+#: are invisible below the admin role — see `hides_admins`.
+ADMIN_ALIAS = "College Office"
+
+
+def hides_admins(viewer: User) -> bool:
+    """Admin accounts are not disclosed to anyone but an admin: not listed,
+    not addressable by id, and named `ADMIN_ALIAS` wherever an admin's id
+    surfaces (marked-by, locked-by, uploader)."""
+    return viewer.role != UserRoleEnum.ADMIN
+
+
 async def list_users(
     db: AsyncSession,
+    viewer: User,
     params: PageParams,
     search: Optional[str] = None,
     role: Optional[UserRoleEnum] = None,
@@ -38,6 +51,8 @@ async def list_users(
     # bounded by staff + one rep per class — hundreds, not thousands — so the
     # substring scan is cheap. Add one if that stops being true.
     stmt = select(User)
+    if hides_admins(viewer):
+        stmt = stmt.where(User.role != UserRoleEnum.ADMIN)
     if role is not None:
         stmt = stmt.where(User.role == role)
     if search and search.strip():
@@ -47,23 +62,42 @@ async def list_users(
     return list(items), total
 
 
-async def list_directory(db: AsyncSession) -> list[dict]:
+async def list_directory(db: AsyncSession, viewer: User) -> list[dict]:
     """id → name for every account (no sensitive fields).
 
     Every marked-by / editor / audit-actor name resolves through this, so it is
-    fetched by most pages; it changes only when accounts do.
+    fetched by most pages; it changes only when accounts do. Non-admins get
+    admin ids under `ADMIN_ALIAS` — the ids stay so names still resolve.
+    Two cache entries, both under the `DIRECTORY` prefix, so one invalidation
+    clears both.
     """
+    masked = hides_admins(viewer)
 
     async def load() -> list[dict]:
-        rows = await db.execute(select(User.id, User.name).order_by(User.name))
-        return [{"id": r[0], "name": r[1]} for r in rows.all()]
+        rows = await db.execute(
+            select(User.id, User.name, User.role).order_by(User.name)
+        )
+        return [
+            {
+                "id": r[0],
+                "name": ADMIN_ALIAS if masked and r[2] == UserRoleEnum.ADMIN else r[1],
+            }
+            for r in rows.all()
+        ]
 
-    return await cached(f"{cache_keys.DIRECTORY}:all", load)
+    key = "public" if masked else "all"
+    return await cached(f"{cache_keys.DIRECTORY}:{key}", load)
 
 
-async def get_user(db: AsyncSession, user_id: str) -> User:
+async def get_user(
+    db: AsyncSession, user_id: str, viewer: Optional[User] = None
+) -> User:
     u = await db.get(User, user_id)
-    if u is None:
+    # An admin account is a 404 to a non-admin, not a 403: a 403 would confirm
+    # the account exists.
+    if u is None or (
+        viewer is not None and hides_admins(viewer) and u.role == UserRoleEnum.ADMIN
+    ):
         raise not_found("User not found")
     return u
 
@@ -155,10 +189,7 @@ def assert_not_self_demotion(actor: User, user_id: str, new_role: UserRoleEnum) 
     if user_id == actor.id and new_role != actor.role:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "You cannot change your own role. Ask another administrator "
-                "to do it."
-            ),
+            detail="You cannot change your own role.",
         )
 
 
@@ -175,7 +206,7 @@ def assert_may_manage(actor: User, target_role: UserRoleEnum) -> None:
     if target_role == UserRoleEnum.ADMIN and actor.role != UserRoleEnum.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only an administrator can manage administrator accounts",
+            detail="You can't create or assign that role",
         )
 
 
@@ -217,7 +248,7 @@ async def create_user(db: AsyncSession, data: UserCreate, actor: User) -> User:
 async def update_user(
     db: AsyncSession, user_id: str, data: UserUpdate, actor: User
 ) -> User:
-    user = await get_user(db, user_id)
+    user = await get_user(db, user_id, actor)
     fields = data.model_dump(exclude_unset=True, by_alias=False)
 
     if "email" in fields and fields["email"]:
@@ -311,8 +342,8 @@ async def change_password(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Class representative accounts are shared — ask an "
-                "administrator to reset the password"
+                "Class representative accounts are shared — contact the "
+                "college office to reset the password"
             ),
         )
     # Same threadpool treatment as login: two bcrypt calls back to back would
@@ -352,7 +383,7 @@ async def delete_user(db: AsyncSession, user_id: str, actor: User) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You cannot delete your own account",
         )
-    user = await get_user(db, user_id)
+    user = await get_user(db, user_id, actor)
     assert_may_manage(actor, user.role)
     # The directory can no longer resolve this id once the row is gone, so the
     # note carries the name and email — the entry is the only record left.

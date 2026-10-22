@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { SelectField } from "@/components/select-field";
 import {
@@ -190,9 +191,8 @@ export function UserFormDialog({
               </div>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="u-password">Password</Label>
-                <Input
+                <PasswordInput
                   id="u-password"
-                  type="password"
                   autoComplete="new-password"
                   value={draft.password}
                   onChange={(e) => set("password", e.target.value)}

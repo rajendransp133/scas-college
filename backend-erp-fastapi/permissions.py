@@ -104,9 +104,10 @@ CAPABILITIES: dict[UserRoleEnum, Capabilities] = {
         mark_scope="own",
         material_scope="own",
     ),
-    # Read-only, and only their own class — the login is shared by the whole
-    # class, so anything it can reach is effectively public to those students.
-    UserRoleEnum.STUDENT_REP: Capabilities(view_scope="class"),
+    # Study Materials only (scoped to their class in services/materials.py).
+    # The login is shared by the whole class, so anything it can reach is
+    # effectively public to those students — attendance and rosters are not.
+    UserRoleEnum.STUDENT_REP: Capabilities(view_scope="none"),
 }
 
 

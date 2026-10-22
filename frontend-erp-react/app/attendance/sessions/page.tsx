@@ -351,7 +351,7 @@ export default function AttendanceSessionsPage() {
             <AlertDialogTitle>Delete this session?</AlertDialogTitle>
             <AlertDialogDescription>
               {deletingSession
-                ? `The register for ${deletingSession.date} · P${deletingSession.period} will be removed for the whole class. The deletion stays on the audit log.`
+                ? `The register for ${deletingSession.date} · P${deletingSession.period} will be removed for the whole class.`
                 : "The session will be removed for the whole class."}
             </AlertDialogDescription>
           </AlertDialogHeader>

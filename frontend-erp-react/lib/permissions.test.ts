@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { canManageRole, isPathAllowed, roleCapabilities } from "@/lib/permissions"
+import { canManageRole, homePath, isPathAllowed, roleCapabilities } from "@/lib/permissions"
 import type { UserRole } from "@/lib/types"
 
 const ALL_ROLES: UserRole[] = [
@@ -86,11 +86,12 @@ describe("isPathAllowed()", () => {
     expect(isPathAllowed("attendance-manager", "/materials")).toBe(false)
   })
 
-  it("student-rep is locked to /attendance/register + /attendance/summary + /materials", () => {
-    expect(isPathAllowed("student-rep", "/attendance/register")).toBe(true)
-    expect(isPathAllowed("student-rep", "/attendance/summary")).toBe(true)
+  it("student-rep is locked to /materials", () => {
     expect(isPathAllowed("student-rep", "/materials")).toBe(true)
-    // NOT the bare /attendance route (marking), nor anything else
+    expect(homePath("student-rep")).toBe("/materials")
+    // No attendance page at all, nor anything else
+    expect(isPathAllowed("student-rep", "/attendance/register")).toBe(false)
+    expect(isPathAllowed("student-rep", "/attendance/summary")).toBe(false)
     expect(isPathAllowed("student-rep", "/attendance")).toBe(false)
     expect(isPathAllowed("student-rep", "/attendance/audit")).toBe(false)
     expect(isPathAllowed("student-rep", "/attendance/sessions")).toBe(false)
@@ -100,7 +101,7 @@ describe("isPathAllowed()", () => {
 
   it("subpaths of an allowed prefix are also allowed (prefix matching)", () => {
     expect(isPathAllowed("teacher", "/attendance/register")).toBe(true)
-    expect(isPathAllowed("student-rep", "/attendance/register/anything")).toBe(true)
+    expect(isPathAllowed("student-rep", "/materials/anything")).toBe(true)
   })
 })
 

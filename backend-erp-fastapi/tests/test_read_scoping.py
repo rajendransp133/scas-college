@@ -1,6 +1,6 @@
 """Read scoping is enforced by the server, not by the client's router.
 
-`lib/permissions.ts` keeps a student-rep on two pages and presets an HOD's
+`lib/permissions.ts` once kept a student-rep on two pages and presets an HOD's
 department filter, and for a long time that was the *only* thing doing it: every
 attendance and student read accepted whatever `courseId` the caller sent. A
 class-rep login — one shared password per class — could ask for any other
@@ -115,143 +115,63 @@ async def hod_headers(client, user_factory, teacher_factory, login_as, two_class
 
 
 # ---------------------------------------------------------------------------
-# The student-rep: pinned to one (program, semester)
+# The student-rep: Study Materials only
 # ---------------------------------------------------------------------------
 
 
-async def test_a_rep_can_read_its_own_class_register(
+def _rep_reads(two_classes) -> list[tuple[str, dict]]:
+    """Every attendance and student read, against the rep's own class *and*
+    another — the rep gets neither."""
+    term_id = two_classes["term"]["id"]
+    reads: list[tuple[str, dict]] = [
+        ("/attendance", {}),
+        ("/attendance/summary", {}),
+        ("/students", {}),
+    ]
+    for key in ("mine", "theirs"):
+        course_id = two_classes[key]["course"]["id"]
+        student_id = two_classes[key]["student"]["id"]
+        reads += [
+            ("/attendance/register", {"courseId": course_id, "termId": term_id}),
+            ("/attendance/roster", {"courseId": course_id}),
+            ("/attendance/class-roster", {"courseId": course_id}),
+            ("/attendance/months", {"courseId": course_id}),
+            ("/attendance/summary", {"courseIds": [course_id]}),
+            ("/attendance/summary/breakdown", {"studentId": student_id}),
+            ("/students/lookup", {"ids": [student_id]}),
+            (f"/students/{student_id}", {}),
+        ]
+    return reads
+
+
+async def test_a_rep_cannot_read_any_attendance_or_students(
     client, rep_headers, two_classes
 ):
-    """The scope has to actually let the rep do their job — otherwise a test
-    suite passes by locking everyone out of everything."""
-    r = await client.get(
-        "/attendance/register",
-        params={
-            "courseId": two_classes["mine"]["course"]["id"],
-            "termId": two_classes["term"]["id"],
-        },
-        headers=rep_headers,
-    )
-    assert r.status_code == 200, r.text
-    assert len(r.json()) == 1
+    """The login is shared by a whole class: not even its own register."""
+    for path, params in _rep_reads(two_classes):
+        r = await client.get(path, params=params, headers=rep_headers)
+        assert r.status_code == 403, f"{path} {params}: {r.status_code} {r.text}"
 
 
-async def test_a_rep_cannot_read_another_classs_register(
-    client, rep_headers, two_classes
+async def test_a_rep_still_reads_its_own_classs_materials(
+    client, admin_headers, rep_headers, two_classes
 ):
-    r = await client.get(
-        "/attendance/register",
-        params={
-            "courseId": two_classes["theirs"]["course"]["id"],
-            "termId": two_classes["term"]["id"],
-        },
-        headers=rep_headers,
-    )
-    assert r.status_code == 403, r.text
-
-
-async def test_a_rep_cannot_read_another_classs_roster(
-    client, rep_headers, two_classes
-):
-    """The roster carries address, date of birth and guardian phone."""
-    for path in ("/attendance/roster", "/attendance/class-roster"):
-        r = await client.get(
-            path,
-            params={"courseId": two_classes["theirs"]["course"]["id"]},
-            headers=rep_headers,
+    for key in ("mine", "theirs"):
+        r = await client.post(
+            "/materials",
+            json={
+                "courseId": two_classes[key]["course"]["id"],
+                "termId": two_classes["term"]["id"],
+                "title": f"Notes {key}",
+                "url": "https://example.com/notes.pdf",
+            },
+            headers=admin_headers,
         )
-        assert r.status_code == 403, f"{path}: {r.text}"
+        assert r.status_code == 201, r.text
 
-
-async def test_a_rep_cannot_read_another_classs_session_months(
-    client, rep_headers, two_classes
-):
-    r = await client.get(
-        "/attendance/months",
-        params={"courseId": two_classes["theirs"]["course"]["id"]},
-        headers=rep_headers,
-    )
-    assert r.status_code == 403, r.text
-
-
-async def test_an_unfiltered_summary_shows_a_rep_only_its_own_class(
-    client, rep_headers, two_classes
-):
-    """No `courseId` at all used to mean "the whole college"."""
-    r = await client.get("/attendance/summary", headers=rep_headers)
+    r = await client.get("/materials", headers=rep_headers)
     assert r.status_code == 200, r.text
-    ids = {row["studentId"] for row in r.json()["items"]}
-    assert ids == {two_classes["mine"]["student"]["id"]}
-
-
-async def test_a_rep_cannot_widen_the_summary_by_naming_a_course(
-    client, rep_headers, two_classes
-):
-    """The request filter is bounded by the scope, never the other way round."""
-    r = await client.get(
-        "/attendance/summary",
-        params={"courseIds": [two_classes["theirs"]["course"]["id"]]},
-        headers=rep_headers,
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["items"] == []
-
-
-async def test_an_unfiltered_session_list_shows_a_rep_only_its_own_class(
-    client, rep_headers, two_classes
-):
-    r = await client.get("/attendance", headers=rep_headers)
-    assert r.status_code == 200, r.text
-    course_ids = {s["courseId"] for s in r.json()["items"]}
-    assert course_ids <= {two_classes["mine"]["course"]["id"]}
-
-
-async def test_a_rep_cannot_list_the_whole_student_directory(
-    client, rep_headers, two_classes
-):
-    r = await client.get("/students", headers=rep_headers)
-    assert r.status_code == 200, r.text
-    ids = {s["id"] for s in r.json()["items"]}
-    assert ids == {two_classes["mine"]["student"]["id"]}
-
-
-async def test_a_rep_cannot_fetch_another_classs_student_by_id(
-    client, rep_headers, two_classes
-):
-    r = await client.get(
-        f"/students/{two_classes['theirs']['student']['id']}", headers=rep_headers
-    )
-    assert r.status_code == 403, r.text
-
-
-async def test_a_rep_lookup_drops_ids_outside_its_class(
-    client, rep_headers, two_classes
-):
-    """Lookup filters rather than 403s — a page can legitimately hold a mixed
-    set of ids, and one stray must not fail the whole request."""
-    r = await client.get(
-        "/students/lookup",
-        params={
-            "ids": [
-                two_classes["mine"]["student"]["id"],
-                two_classes["theirs"]["student"]["id"],
-            ]
-        },
-        headers=rep_headers,
-    )
-    assert r.status_code == 200, r.text
-    assert [s["id"] for s in r.json()] == [two_classes["mine"]["student"]["id"]]
-
-
-async def test_a_rep_cannot_read_another_students_breakdown(
-    client, rep_headers, two_classes
-):
-    r = await client.get(
-        "/attendance/summary/breakdown",
-        params={"studentId": two_classes["theirs"]["student"]["id"]},
-        headers=rep_headers,
-    )
-    assert r.status_code == 403, r.text
+    assert [m["title"] for m in r.json()["items"]] == ["Notes mine"]
 
 
 # ---------------------------------------------------------------------------
@@ -389,29 +309,6 @@ def _assert_full(student: dict) -> None:
     assert student["address"] == "123 Test Street"
     assert student["guardianPhone"] == "7000000000"
     assert student["dateOfBirth"] == "2002-01-01"
-
-
-async def test_a_rep_sees_its_own_roster_without_pii(client, rep_headers, two_classes):
-    for path in ("/attendance/roster", "/attendance/class-roster"):
-        r = await client.get(
-            path,
-            params={"courseId": two_classes["mine"]["course"]["id"]},
-            headers=rep_headers,
-        )
-        assert r.status_code == 200, f"{path}: {r.text}"
-        rows = r.json()
-        assert rows, f"{path}: roster empty, nothing to check"
-        for student in rows:
-            _assert_redacted(student)
-
-
-async def test_a_reps_student_list_is_redacted(client, rep_headers, two_classes):
-    r = await client.get("/students", headers=rep_headers)
-    assert r.status_code == 200, r.text
-    rows = r.json()["items"]
-    assert rows
-    for student in rows:
-        _assert_redacted(student)
 
 
 async def test_a_teacher_sees_its_roster_without_pii(

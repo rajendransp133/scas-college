@@ -125,8 +125,8 @@ const CAPABILITIES: Record<UserRole, Capabilities> = {
     markScope: "own",
     materialScope: "own",
   },
-  // One shared read-only account per class — students view their own
-  // class's attendance (register + summary), no write access anywhere.
+  // One shared read-only account per class — Study Materials only (no
+  // attendance, no rosters); the backend refuses those reads with a 403.
   "student-rep": NONE,
 }
 
@@ -164,11 +164,7 @@ const HOD_ROUTES = [
   "/attendance",
   "/materials",
 ]
-const STUDENT_REP_ROUTES = [
-  "/attendance/register",
-  "/attendance/summary",
-  "/materials",
-]
+const STUDENT_REP_ROUTES = ["/materials"]
 /** Oversight page — admin only, even though it lives under /attendance. The
  * attendance-manager is the exception: it may open the page itself (to freeze
  * records) but not the log beneath it. */
@@ -222,7 +218,7 @@ export function homePath(role: UserRole): string {
     case "hod":
       return "/"
     case "student-rep":
-      return "/attendance/register"
+      return "/materials"
   }
 }
 

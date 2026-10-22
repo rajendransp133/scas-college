@@ -103,14 +103,15 @@ export default function UsersPage() {
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 1;
 
-  // Every role, including `admin` — this filter narrows a *read*, and a
-  // principal already sees admin rows in the unfiltered list (they just get no
-  // row actions, via `canManageRole` below). `canManageRole` gates writes; the
-  // create/edit dialog's role list is where it belongs.
+  // Admin accounts are invisible below admin (the backend leaves them out of
+  // the list), so a principal isn't offered an "Admin" filter either.
   const roleOptions = useMemo(
     () =>
-      USER_ROLES.map((r) => ({ value: r, label: USER_ROLE_LABELS[r] })),
-    [],
+      USER_ROLES.filter((r) => r !== "admin" || role === "admin").map((r) => ({
+        value: r,
+        label: USER_ROLE_LABELS[r],
+      })),
+    [role],
   );
 
   const teacherName = useMemo(
@@ -348,7 +349,7 @@ export default function UsersPage() {
             <AlertDialogDescription>
               <strong>{disabling?.name}</strong> ({disabling?.email}) will be
               signed out on every device and can&apos;t log in until the account
-              is enabled again. Their records and audit history are kept.
+              is enabled again. Their records are kept.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

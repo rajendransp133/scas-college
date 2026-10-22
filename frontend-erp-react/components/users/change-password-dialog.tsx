@@ -11,7 +11,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { errMsg } from "@/lib/api";
 import { useChangePassword } from "@/lib/queries";
@@ -98,9 +98,8 @@ export function ChangePasswordDialog({
           <div className="grid gap-4 py-2">
             <div className="flex flex-col gap-2">
               <Label htmlFor="cp-current">Current password</Label>
-              <Input
+              <PasswordInput
                 id="cp-current"
-                type="password"
                 autoComplete="current-password"
                 value={currentPassword}
                 onChange={(e) => setCurrentPassword(e.target.value)}
@@ -108,9 +107,8 @@ export function ChangePasswordDialog({
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="cp-new">New password</Label>
-              <Input
+              <PasswordInput
                 id="cp-new"
-                type="password"
                 autoComplete="new-password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
@@ -121,9 +119,8 @@ export function ChangePasswordDialog({
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="cp-confirm">Confirm new password</Label>
-              <Input
+              <PasswordInput
                 id="cp-confirm"
-                type="password"
                 autoComplete="new-password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}

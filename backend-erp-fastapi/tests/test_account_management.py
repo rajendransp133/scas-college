@@ -90,10 +90,11 @@ async def test_principal_cannot_edit_or_delete_an_admin(
     r = await client.put(
         f"/users/{other_admin['id']}", json={"role": "teacher"}, headers=headers
     )
-    assert r.status_code == 403, r.text
+    # 404, not 403: a non-admin isn't told the admin account exists.
+    assert r.status_code == 404, r.text
 
     r = await client.delete(f"/users/{other_admin['id']}", headers=headers)
-    assert r.status_code == 403, r.text
+    assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio
@@ -207,3 +208,34 @@ async def test_student_rep_cannot_change_the_shared_password(
         headers=headers,
     )
     assert r.status_code == 403, r.text
+
+
+@pytest.mark.asyncio
+async def test_admin_accounts_are_invisible_below_admin(
+    client: httpx.AsyncClient, user_factory, login_as, admin_headers
+):
+    """A non-admin is never told an admin account exists: not in the list,
+    not under a role filter, and the directory names it "College Office"."""
+    principal = await user_factory("principal", password="principal123")
+    hidden = await user_factory("admin", name="Hidden Admin")
+    headers = await login_as(client, principal["email"], "principal123")
+
+    r = await client.get("/users", params={"pageSize": 200}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert all(u["role"] != "admin" for u in r.json()["items"])
+    r = await client.get("/users", params={"role": "admin"}, headers=headers)
+    assert r.json()["total"] == 0
+
+    directory = {
+        e["id"]: e["name"]
+        for e in (await client.get("/users/directory", headers=headers)).json()
+    }
+    assert directory[hidden["id"]] == "College Office"
+    assert "Hidden Admin" not in directory.values()
+
+    # The admin still sees the real name (separate cache entry).
+    directory = {
+        e["id"]: e["name"]
+        for e in (await client.get("/users/directory", headers=admin_headers)).json()
+    }
+    assert directory[hidden["id"]] == "Hidden Admin"

@@ -88,10 +88,26 @@ async def _own_course_ids(db: AsyncSession, user: User, term_id: Optional[str]) 
     return await _cached_own(db, user, term_id)
 
 
+def assert_may_read_classes(user: User) -> None:
+    """403 for a role with `view_scope="none"` (the student-rep).
+
+    Both scope shapes below call this first, so every attendance and student
+    read is refused outright rather than answering with an empty page — the
+    rep's login is shared by a whole class and reaches Study Materials only
+    (`services/materials.py` scopes those by its own rules).
+    """
+    if role_capabilities(user.role).view_scope == "none":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account can only view study materials",
+        )
+
+
 async def visible_course_ids(
     db: AsyncSession, user: User, term_id: Optional[str]
 ) -> Optional[set[str]]:
     """Course ids this caller may read. `None` = unrestricted."""
+    assert_may_read_classes(user)
     scope = role_capabilities(user.role).view_scope
     if scope == "all":
         return None
@@ -123,6 +139,7 @@ async def visible_class_keys(
     `apply_student_scope`, which needs the department as a column filter rather
     than an enumerated pair list.
     """
+    assert_may_read_classes(user)
     scope = role_capabilities(user.role).view_scope
     if scope == "all":
         return None
@@ -211,8 +228,7 @@ async def apply_student_scope(
     scope = role_capabilities(user.role).view_scope
     if scope == "all":
         return stmt
-    if scope == "none":
-        return stmt.where(false())
+    assert_may_read_classes(user)
 
     clauses = []
     if scope == "department":

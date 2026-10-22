@@ -152,7 +152,7 @@ export default function SemesterClosePage() {
             ? `Locked only up to ${lockDate}, but classes ran until ${maxSessionDate || "—"}.`
             : canFreeze
               ? "Records are still open — lock them once marking is finished."
-              : "Records are still open — an administrator freezes them once marking is finished.",
+              : "Records are still open — the attendance manager freezes them once marking is finished.",
         done: locked,
         // Freezing is the administrator's step; everyone else sees the status
         // but has nowhere to act (they can't reach the oversight page).

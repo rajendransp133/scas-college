@@ -502,7 +502,7 @@ export default function StudentsPage() {
             <AlertDialogDescription>
               This permanently removes <strong>{deleting?.name}</strong> (
               {deleting?.rollNumber}) and strips their marks from every saved
-              attendance session; only audit-log entries remain. For a student
+              attendance session. For a student
               who discontinued, use <em>Deactivate</em> instead — their
               attendance history stays visible, tagged &quot;Left&quot;.
             </AlertDialogDescription>

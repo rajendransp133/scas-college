@@ -127,7 +127,7 @@ export function SessionRosterDialog({
           </DialogTitle>
           <DialogDescription>
             {canEdit
-              ? "Tap a status to correct it. Every change is stamped and stays on the audit log."
+              ? "Tap a status to correct it. Every change is stamped with who made it."
               : "This session is read-only for your role."}
           </DialogDescription>
         </DialogHeader>

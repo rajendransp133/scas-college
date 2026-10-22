@@ -58,7 +58,7 @@ mistaking the mirror for the guard is how both were broken at once:
 - **Read scoping** (`backend-erp-fastapi/services/scope.py`, capability `view_scope`). Who may
   *read* which class, as distinct from who may write attendance (`mark_scope`) or share materials
   (`material_scope`). admin/principal/attendance-manager → the college; hod → their department;
-  teacher → courses assigned this term; student-rep → their one `(program, semester)`. Until this
+  teacher → courses assigned this term; student-rep → **nothing** (Study Materials only). Until this
   module existed, `lib/permissions.ts`'s route table was the only thing scoping anything, and a
   class-rep login — one password shared by a whole class — could read any other class's register,
   any roster (addresses, dates of birth, guardian phone numbers) and the college-wide summary by
@@ -153,7 +153,7 @@ architecture"; frontend: same section name) — this is the map:
   both sides (`NEXT_PUBLIC_SENTRY_DSN` — empty disables it), plus `output: "standalone"` for the
   Docker image.
 - **Tests + CI**: `backend-erp-fastapi/tests/` (pytest + testcontainers, a real ephemeral
-  Postgres per run, 153 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
+  Postgres per run, 143 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
   uniqueness, per-role read and write scoping, constraint races, and the self-demotion lockout.
   `frontend-erp-react/lib/*.test.ts` (Vitest + Testing Library, 58 tests) covers the attendance
   tally/pct math, the permission matrix, the 401/token-rotation handling and CSV export.

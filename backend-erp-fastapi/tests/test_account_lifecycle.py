@@ -156,7 +156,8 @@ async def test_a_principal_cannot_disable_an_admin(
     r = await client.put(
         f"/users/{target['id']}", json={"isActive": False}, headers=headers
     )
-    assert r.status_code == 403, r.text
+    # 404: admin accounts are invisible below admin.
+    assert r.status_code == 404, r.text
     # And the admin can still sign in.
     await _login(client, target["email"], PW)
 

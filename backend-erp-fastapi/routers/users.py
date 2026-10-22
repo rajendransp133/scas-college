@@ -31,10 +31,11 @@ async def list_users(
     sort_dir: Optional[str] = Query(None, alias="sortDir", pattern="^(asc|desc)$"),
     params: PageParams = Depends(page_params),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_manage),
+    viewer: User = Depends(_manage),
 ):
     items, total = await svc.list_users(
         db,
+        viewer,
         params,
         search=search,
         role=role,
@@ -51,10 +52,10 @@ async def list_users(
 
 @router.get("/directory", response_model=list[UserDirectoryEntry])
 async def user_directory(
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)
+    db: AsyncSession = Depends(get_db), viewer: User = Depends(get_current_user)
 ):
     # id→name only; any authenticated user (name resolution across the app).
-    return await svc.list_directory(db)
+    return await svc.list_directory(db, viewer)
 
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

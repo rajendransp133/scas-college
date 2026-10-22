@@ -38,7 +38,7 @@ python -m uvicorn main:app --reload --port 8000   # docs at http://localhost:800
   --autogenerate -m "msg"`.
 - **Windows:** run Python in **PowerShell**, not Git Bash. When running scripts by absolute path,
   set `PYTHONPATH` to the backend dir so top-level packages import.
-- **Tests:** `python -m pytest` (153 tests). `tests/` uses pytest + testcontainers — a throwaway
+- **Tests:** `python -m pytest` (143 tests). `tests/` uses pytest + testcontainers — a throwaway
   `postgres:16` per session, migrated with `alembic upgrade head`, truncated between tests. Docker
   must be running. Factories in `conftest.py` arrange scenarios through the real HTTP API.
 
@@ -244,7 +244,23 @@ writes everywhere, a student-rep writes nowhere and still has to read something.
 | admin, principal, attendance-manager | `all` | the college |
 | hod | `department` | own department + anything they personally teach |
 | teacher | `own` | courses assigned to them **this term** |
-| student-rep | `class` | the one `(program, semester)` the login is pinned to |
+| student-rep | `none` | **no attendance or student reads at all** — 403 |
+
+The student-rep reaches Study Materials only (its class's courses, scoped by
+`services/materials.py`'s own rules, which don't consult `view_scope`).
+`assert_may_read_classes` runs first in `visible_course_ids`,
+`visible_class_keys` and `apply_student_scope`, so every attendance/student
+read is a 403 for it rather than an empty page. (The `class` branch in
+`scope.py` is kept but no role uses it now.)
+
+**Admin accounts are invisible below admin** (`services/users.py::hides_admins`):
+`GET /users` leaves them out for a principal, `PUT`/`DELETE /users/{id}` on one
+is a **404** (not 403, which would confirm it exists), and `/users/directory`
+names every admin `ADMIN_ALIAS` ("College Office") for non-admins — the ids
+stay, so marked-by / locked-by / uploader names still resolve. The directory
+is cached as two entries (`directory:all`, `directory:public`) under the one
+`DIRECTORY` prefix, so the existing invalidation clears both. Error messages
+non-admins can see say "contact the college office", never "administrator".
 
 `services/scope.py` turns that into two shapes — `visible_course_ids` (attendance
 lives on courses) and `visible_class_keys` (students live in a class) — where
@@ -572,7 +588,7 @@ Rules added by the code-quality pass; follow them when writing a new endpoint.
 
 ## Tests
 
-`tests/` (pytest + testcontainers, 153 tests) covers auth, cascades, single-HOD,
+`tests/` (pytest + testcontainers, 143 tests) covers auth, cascades, single-HOD,
 attendance correction/audit/lock, uniqueness, account management + the
 admin-escalation guard, and student *and* teacher optional-field intake.
 `test_scope_regressions.py` (write scope after a read, `/stats` and breakdown

@@ -77,7 +77,7 @@ const navGroups = [
     ],
   },
   {
-    label: "Oversight",
+    label: "Management",
     items: [
       { href: "/attendance/audit", label: "Attendance Oversight", icon: ShieldCheck, exact: true },
       { href: "/attendance/audit/log", label: "Audit Log", icon: ScrollText },
@@ -110,7 +110,15 @@ export function AppSidebar() {
     ? navGroups
         .map((g) => ({
           ...g,
-          items: g.items.filter((item) => isPathAllowed(role, item.href)),
+          items: g.items
+            .filter((item) => isPathAllowed(role, item.href))
+            // Only the admin sees the warning signs; for everyone else the
+            // page is just the lock.
+            .map((item) =>
+              item.href === "/attendance/audit" && role !== "admin"
+                ? { ...item, label: "Attendance Lock" }
+                : item,
+            ),
         }))
         .filter((g) => g.items.length > 0)
     : [];

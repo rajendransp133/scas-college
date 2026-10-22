@@ -59,7 +59,7 @@ async def guard_attendance_cascade(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
                 f"{label} has attendance on locked dates and cannot be deleted. "
-                "Deactivate it instead, or ask an administrator."
+                "Deactivate it instead, or contact the college office."
             ),
         )
     db.add(
