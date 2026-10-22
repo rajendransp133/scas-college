@@ -204,9 +204,15 @@ carries the full schema and data.
   automatic HTTPS issues a Let's Encrypt certificate for it. Local testing
   without a domain: see the commented `:80` block at the bottom of
   `Caddyfile`.
-- Postgres runs with `max_connections=150` (`docker-compose.yml`) sized for
-  4 gunicorn workers × (`db_pool_size=8` + `db_max_overflow=4`) = 48
-  connections from `api` alone, plus headroom. If `WEB_CONCURRENCY` changes,
+- **Sized for a 1 GB VPS.** `api` runs 2 gunicorn workers (`WEB_CONCURRENCY`,
+  ~90 MB each), and every long-running container has a `mem_limit`
+  (api 450m, web 250m, postgres 256m, redis 80m, caddy 96m), so a leak gets
+  that one container OOM-killed and restarted rather than the kernel killing
+  something random on the host. Override any cap in `.env` (see
+  `.env.example`). Keep a swapfile (1–2 GB) on a box this small.
+- Postgres runs with `max_connections=40` and `shared_buffers=64MB`, sized for
+  2 gunicorn workers × (`db_pool_size=8` + `db_max_overflow=4`) = 24
+  connections from `api`, plus headroom. If `WEB_CONCURRENCY` changes,
   re-check this math.
 - Redis has AOF persistence disabled (`--appendonly no`) — it's a pure
   cache/rate-limit store, so losing it on restart is a cold cache, not data

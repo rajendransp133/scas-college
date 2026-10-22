@@ -510,13 +510,14 @@ deployment and horizontal scale:
 7. **Multi-worker via gunicorn**, not bare `uvicorn --workers`: gunicorn's
    master process supervises workers (auto-restart on crash), which
    bare-uvicorn multi-worker mode doesn't do. `Dockerfile`'s `CMD` runs
-   `gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-4} -b
+   `gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b
    0.0.0.0:8000 main:app` — **gunicorn only works on Linux** (uses `fcntl`),
    so it only ever runs inside the container, never on a Windows dev host.
 8. **DB pool re-tuned per-worker.** `db_pool_size=8`/`db_max_overflow=4`
-   (was 20/20, sized for one worker) — at `WEB_CONCURRENCY=4` that's 48 max
-   connections from `api` alone; `docker-compose.yml` raises Postgres'
-   `max_connections` to 150 to match. Change one, re-check the other.
+   (was 20/20, sized for one worker) — at `WEB_CONCURRENCY=2` (the 1 GB VPS
+   default; each worker is ~90 MB) that's 24 max connections from `api`;
+   `docker-compose.yml` sets Postgres' `max_connections=40` to match, and caps
+   every container with `mem_limit`. Change one, re-check the other.
 9. **Containerized**: `Dockerfile` (this dir) + `frontend-erp-react/Dockerfile`
    + repo-root `docker-compose.yml`/`Caddyfile`/`DEPLOY.md`. Migrations run as
    an explicit one-shot `docker compose run --rm migrate` deploy step, never

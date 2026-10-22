@@ -102,7 +102,7 @@ Tables: `department`, `program`, `semester`, `course`, `student`, `teacher`, `co
 | Indexes | Composite indexes for the hot paths (student by program+semester, session by term/date/period, record by student+status); descending `at` indexes on `audit_entry`; partial/trigram indexes for search |
 | Scale | Validated against ~4.8k students, 202k sessions, **4M records**, 224k audit rows |
 | Dev default | `postgresql+asyncpg://postgres:1234@localhost/erp_scas` (config default — override in any shared environment) |
-| Docker | `postgres:16`, `max_connections=150` (4 workers × 12 = 48 from the API, rest is headroom), named volume `postgres_data` |
+| Docker | `postgres:16`, `max_connections=40`, `shared_buffers=64MB` (2 workers × 12 = 24 from the API, rest is headroom; sized for a 1 GB VPS), named volume `postgres_data` |
 | Backups | `docker compose --profile backup run --rm backup` → `pg_dump -Fc` to `./backups`, keeps the newest 14 |
 
 ---
@@ -145,7 +145,7 @@ Two Compose files, same images.
 | `migrate` (prod) | backend image | One-shot `alembic upgrade head`, run explicitly so replicas never race |
 | `seed` (prod) | backend image | One-shot production seed; writes `seed_credentials.csv` |
 | `bootstrap` (local) | backend image | Migrate + seed automatically on `up`, safe to re-run |
-| `api` | `backend-erp-fastapi/Dockerfile` | gunicorn + uvicorn workers (`WEB_CONCURRENCY`, default 4), `/health/ready` healthcheck, not published |
+| `api` | `backend-erp-fastapi/Dockerfile` | gunicorn + uvicorn workers (`WEB_CONCURRENCY`, default 2), `/health/ready` healthcheck, not published |
 | `web` | `frontend-erp-react/Dockerfile` | Next.js standalone server on :3000, not published |
 | `caddy` | caddy:2-alpine | Only public entry point |
 | `backup` (prod, profile) | postgres:16 | On-demand `pg_dump` |

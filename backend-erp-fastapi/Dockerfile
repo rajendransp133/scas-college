@@ -50,7 +50,7 @@ EXPOSE 8000
 # WEB_CONCURRENCY is read from the environment at *container start*, not
 # baked in at build time, so ops can retune worker count per deploy (see
 # docker-compose.yml / DEPLOY.md) without a rebuild. That needs shell-form
-# expansion of `${WEB_CONCURRENCY:-4}` — a bare exec-form CMD (`CMD
+# expansion of `${WEB_CONCURRENCY:-2}` — a bare exec-form CMD (`CMD
 # ["gunicorn", ...]`) can't expand env vars at all.
 #
 # Plain shell-form (`CMD gunicorn ...`) would leave `/bin/sh -c` as PID 1
@@ -60,4 +60,9 @@ EXPOSE 8000
 # so gunicorn itself becomes PID 1 and receives signals directly, giving the
 # same graceful-shutdown behavior exec-form CMD would have while still
 # expanding the env var.
-CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-4} -b 0.0.0.0:8000 --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 5000 --max-requests-jitter 500 main:app"]
+#
+# --max-requests 1000 recycles each worker sooner, so slow per-process growth
+# never builds up. No --preload: Sentry starts a background thread at import,
+# which would not survive the fork, and CPython's refcounting dirties shared
+# pages anyway, so the copy-on-write saving is small.
+CMD ["sh", "-c", "exec gunicorn -k uvicorn.workers.UvicornWorker -w ${WEB_CONCURRENCY:-2} -b 0.0.0.0:8000 --timeout 60 --graceful-timeout 30 --keep-alive 5 --max-requests 1000 --max-requests-jitter 200 main:app"]

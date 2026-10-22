@@ -28,10 +28,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-    # 4 gunicorn workers * (db_pool_size=8 + db_max_overflow=4) = 48 max
-    # connections from `api` alone (see backend config.py) — 150 leaves
-    # headroom for `migrate`, ad-hoc psql, and future `api` replicas.
-    command: postgres -c max_connections=150
+    # Sized for a 1 GB VPS. 2 gunicorn workers * (db_pool_size=8 +
+    # db_max_overflow=4) = 24 max connections from `api` (see backend
+    # config.py); 40 leaves headroom for `migrate`, `backup` and ad-hoc psql.
+    # Every connection is its own backend process, so a high ceiling is
+    # memory waiting to be spent. Raise both together on a bigger box.
+    command: postgres -c max_connections=40 -c shared_buffers=64MB
+    # Hard caps so one leaking container is OOM-killed and restarted by
+    # Docker, instead of the kernel picking a victim across the whole host.
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -79,7 +84,8 @@ services:
     # AOF persistence is disabled to avoid the disk I/O it would cost. Memory
     # is capped with LRU eviction so it can never grow until the host OOMs;
     # every key is a cache entry or a short rate-limit window, safe to evict.
-    command: redis-server --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly no --maxmemory 48mb --maxmemory-policy allkeys-lru
+    mem_limit: ${REDIS_MEM_LIMIT:-80m}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -158,7 +164,9 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-production}
       SENTRY_DSN: ${SENTRY_DSN:-}
       # Read at container start (not baked in), see backend Dockerfile CMD.
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      # Each worker is ~90 MB resident; async workers each serve many
+      # requests at once, so 2 is enough on a 1 GB box.
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       # JSON array string, e.g. ["https://your-domain.com"] — see .env.example.
       CORS_ORIGINS: ${CORS_ORIGINS}
     depends_on:
@@ -166,6 +174,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    mem_limit: ${API_MEM_LIMIT:-450m}
     # Readiness (DB + Redis reachable), not liveness — a container that can't
     # reach Postgres reports unhealthy and stays out of rotation. Probed with
     # stdlib urllib so the image needs no curl; a 503 raises HTTPError → exit 1.
@@ -196,6 +205,10 @@ services:
     logging: *logging
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      # Keep V8's heap under the container cap so Node collects garbage
+      # before Docker OOM-kills it.
+      NODE_OPTIONS: --max-old-space-size=${WEB_HEAP_MB:-160}
+    mem_limit: ${WEB_MEM_LIMIT:-250m}
     depends_on:
       api:
         condition: service_healthy
@@ -224,6 +237,7 @@ services:
       # Templated into the Caddyfile ({$DOMAIN}) — see Caddyfile's own
       # comment for the local-testing (no real domain) alternative.
       DOMAIN: ${DOMAIN:-localhost}
+    mem_limit: ${CADDY_MEM_LIMIT:-96m}
     ports:
       - "80:80"
       - "443:443"

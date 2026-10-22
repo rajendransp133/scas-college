@@ -64,8 +64,8 @@ eyeballed.
 Also watch, on the server side, during each run:
 
 - **Postgres connections** (`SELECT count(*) FROM pg_stat_activity;`) against
-  `max_connections` (150 in `docker-compose.yml`, per the Phase 3 pool math:
-  4 gunicorn workers × 12 max connections/worker = 48 possible, comfortable
+  `max_connections` (40 in `docker-compose.yml`, per the pool math:
+  2 gunicorn workers × 12 max connections/worker = 24 possible, comfortable
   headroom — if this run pushes noticeably higher than expected, the pool
   math needs revisiting, not just the worker count).
 - **Memory per gunicorn worker** (`docker stats`) — catches a leak or an
