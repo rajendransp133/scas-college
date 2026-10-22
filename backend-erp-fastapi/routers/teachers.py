@@ -72,9 +72,9 @@ async def get_teacher(
 async def create_teacher(
     data: TeacherCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.create_teacher(db, data)
+    return await svc.create_teacher(db, data, actor)
 
 
 @router.put("/{teacher_id}", response_model=TeacherResponse)
@@ -82,18 +82,18 @@ async def update_teacher(
     teacher_id: str,
     data: TeacherUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.update_teacher(db, teacher_id, data)
+    return await svc.update_teacher(db, teacher_id, data, actor)
 
 
 @router.delete("/{teacher_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_teacher(
     teacher_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    await svc.delete_teacher(db, teacher_id)
+    await svc.delete_teacher(db, teacher_id, actor)
 
 
 @router.post("/{teacher_id}/hod", response_model=TeacherResponse)
@@ -101,6 +101,6 @@ async def set_hod(
     teacher_id: str,
     payload: SetHodPayload,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.set_hod(db, teacher_id, payload.is_hod)
+    return await svc.set_hod(db, teacher_id, payload.is_hod, actor)

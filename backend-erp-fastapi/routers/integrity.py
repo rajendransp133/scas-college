@@ -75,7 +75,12 @@ async def list_audit(
 @router.get("/audit/lock-history", response_model=list[AuditResponse])
 async def lock_history(
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_capability("view_audit")),
+    _: User = Depends(require_capability("view_audit", "lock_attendance")),
 ):
-    """Lock/unlock events for the oversight page's freeze-history list."""
+    """Lock/unlock events for the oversight page's freeze-history list.
+
+    Also open to `lock_attendance` without `view_audit` (the
+    attendance-manager): whoever may freeze records needs to see when they
+    were last frozen and by whom. It returns lock/unlock entries only — the
+    rest of the log stays behind `view_audit`."""
     return await svc.list_lock_history(db)

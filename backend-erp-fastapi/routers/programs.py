@@ -42,9 +42,9 @@ async def get_program(
 async def create_program(
     data: ProgramCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.create_program(db, data)
+    return await svc.create_program(db, data, actor)
 
 
 @router.put("/{program_id}", response_model=ProgramResponse)
@@ -52,9 +52,9 @@ async def update_program(
     program_id: str,
     data: ProgramUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.update_program(db, program_id, data)
+    return await svc.update_program(db, program_id, data, actor)
 
 
 @router.delete("/{program_id}", status_code=status.HTTP_204_NO_CONTENT)

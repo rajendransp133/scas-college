@@ -4,9 +4,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from enums.AuditAction import AuditActionEnum
 from ids import new_id
 from models import Course, Department, Program, Semester, User
-from services.audit import guard_attendance_cascade
+from services.audit import changed_fields, guard_attendance_cascade, make_audit
 from services.cache import invalidate_curriculum
 from schemas.Department import DepartmentCreate, DepartmentUpdate
 from services.util import apply_updates, commit_or_raise, not_found
@@ -48,9 +49,18 @@ async def _get_department_row(db: AsyncSession, dept_id: str) -> Department:
     return dep
 
 
-async def create_department(db: AsyncSession, data: DepartmentCreate) -> Department:
+async def create_department(
+    db: AsyncSession, data: DepartmentCreate, actor: User
+) -> Department:
     dep = Department(id=new_id("dept"), name=data.name, code=data.code)
     db.add(dep)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_DEPARTMENT,
+            note=f"Created department {dep.code} {dep.name} ({dep.id})",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(dep)
     await invalidate_curriculum()
@@ -58,10 +68,19 @@ async def create_department(db: AsyncSession, data: DepartmentCreate) -> Departm
 
 
 async def update_department(
-    db: AsyncSession, dept_id: str, data: DepartmentUpdate
+    db: AsyncSession, dept_id: str, data: DepartmentUpdate, actor: User
 ) -> Department:
     dep = await _get_department_row(db, dept_id)
+    changes = changed_fields(dep, data.model_dump(exclude_unset=True, by_alias=False))
     apply_updates(dep, data)
+    if changes:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_DEPARTMENT,
+                note=f"Updated department {dep.code} ({dep.id}): {', '.join(changes)}",
+            )
+        )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(dep)
     await invalidate_curriculum()
@@ -81,6 +100,13 @@ async def delete_department(db: AsyncSession, user: User, dept_id: str) -> None:
         .join(Semester, Semester.id == Course.semester_id)
         .join(Program, Program.id == Semester.program_id)
         .where(Program.department_id == dept_id),
+    )
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.DELETE_DEPARTMENT,
+            note=f"Deleted department {dep.code} {dep.name} ({dep.id})",
+        )
     )
     await db.delete(dep)
     await db.commit()

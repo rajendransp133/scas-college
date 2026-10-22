@@ -5,11 +5,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.cache as cache_keys
+from enums.AuditAction import AuditActionEnum
 from enums.TermParity import TermParityEnum
 from ids import new_id
-from models import AcademicTerm, AppSettings
+from models import AcademicTerm, AppSettings, User
 from models.AppSettings import SETTINGS_ID
 from schemas.Term import TermCreate, TermResponse
+from services.audit import make_audit
 from services.cache import cached, invalidate
 from services.util import conflict, not_found
 
@@ -38,7 +40,7 @@ async def list_terms(db: AsyncSession) -> list[dict]:
     return await cached(f"{cache_keys.TERMS}:all", load)
 
 
-async def add_term(db: AsyncSession, data: TermCreate) -> AcademicTerm:
+async def add_term(db: AsyncSession, data: TermCreate, actor: User) -> AcademicTerm:
     term = AcademicTerm(
         id=new_id("term"),
         name=term_label(data.start_year, data.parity),
@@ -47,6 +49,13 @@ async def add_term(db: AsyncSession, data: TermCreate) -> AcademicTerm:
         parity=data.parity,
     )
     db.add(term)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_TERM,
+            note=f"Created term {term.name} ({term.id})",
+        )
+    )
     try:
         await db.commit()
     except IntegrityError:
@@ -65,11 +74,24 @@ async def _get_settings(db: AsyncSession) -> AppSettings:
     return row
 
 
-async def set_current_term(db: AsyncSession, term_id: str) -> AcademicTerm:
+async def set_current_term(
+    db: AsyncSession, term_id: str, actor: User
+) -> AcademicTerm:
     term = await db.get(AcademicTerm, term_id)
     if term is None:
         raise not_found("Term not found")
     settings_row = await _get_settings(db)
+    if settings_row.current_term_id != term_id:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.SET_CURRENT_TERM,
+                note=(
+                    f"Current term changed from {settings_row.current_term_id or 'none'} "
+                    f"to {term.name} ({term.id})"
+                ),
+            )
+        )
     settings_row.current_term_id = term_id
     await db.commit()
     # The whole app is scoped by the current term — every cached view of it

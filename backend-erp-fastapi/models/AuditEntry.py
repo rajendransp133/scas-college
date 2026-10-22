@@ -31,7 +31,7 @@ class AuditEntry(Base, Repr):
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     action: Mapped[AuditActionEnum] = mapped_column(
-        str_enum(AuditActionEnum, "audit_action_enum"), nullable=False
+        str_enum(AuditActionEnum, "audit_action_enum", length=32), nullable=False
     )
     course_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     term_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

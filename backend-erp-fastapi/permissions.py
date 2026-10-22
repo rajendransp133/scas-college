@@ -86,12 +86,17 @@ CAPABILITIES: dict[UserRoleEnum, Capabilities] = {
     UserRoleEnum.TEACHER: Capabilities(
         view_scope="own", mark_scope="own", material_scope="own"
     ),
+    # Runs the registers day to day, so it also freezes them: `lock_attendance`
+    # (the oversight page's freeze card) — but not `view_audit`. The red flags
+    # and the log watch the people who correct attendance, this role included,
+    # so they stay with the administrator.
     UserRoleEnum.ATTENDANCE_MANAGER: Capabilities(
         view_scope="all",
         mark_scope="all",
         edit_attendance=True,
         delete_attendance=True,
         override_lock=True,
+        lock_attendance=True,
     ),
     UserRoleEnum.HOD: Capabilities(
         view_scope="department",

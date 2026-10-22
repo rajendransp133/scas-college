@@ -153,9 +153,9 @@ architecture"; frontend: same section name) — this is the map:
   both sides (`NEXT_PUBLIC_SENTRY_DSN` — empty disables it), plus `output: "standalone"` for the
   Docker image.
 - **Tests + CI**: `backend-erp-fastapi/tests/` (pytest + testcontainers, a real ephemeral
-  Postgres per run, 144 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
+  Postgres per run, 153 tests) covers auth, cascades, single-HOD, attendance correction/audit/lock,
   uniqueness, per-role read and write scoping, constraint races, and the self-demotion lockout.
-  `frontend-erp-react/lib/*.test.ts` (Vitest + Testing Library, 57 tests) covers the attendance
+  `frontend-erp-react/lib/*.test.ts` (Vitest + Testing Library, 58 tests) covers the attendance
   tally/pct math, the permission matrix, the 401/token-rotation handling and CSV export.
   `.github/workflows/ci.yml` (repo root) runs both, plus lint/typecheck/build, ruff, and a
   `migrations` job (single Alembic head, upgrade→downgrade→upgrade, `alembic check` for drift),

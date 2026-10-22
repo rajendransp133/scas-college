@@ -142,9 +142,9 @@ async def get_student(
 async def create_student(
     data: StudentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.create_student(db, data)
+    return await svc.create_student(db, data, actor)
 
 
 @router.put("/{student_id}", response_model=StudentResponse)
@@ -152,9 +152,9 @@ async def update_student(
     student_id: str,
     data: StudentUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.update_student(db, student_id, data)
+    return await svc.update_student(db, student_id, data, actor)
 
 
 @router.delete("/{student_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -170,21 +170,21 @@ async def delete_student(
 async def toggle_active(
     student_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.toggle_active(db, student_id)
+    return await svc.toggle_active(db, student_id, actor)
 
 
 @router.post("/promote")
 async def promote(
     payload: IdListPayload,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
     # repsRemoved: class-rep logins retired because their class moved out of
     # that semester in whole. Surfaced so the UI can prompt the admin to create
     # the replacement account for the class's new semester.
-    n, reps_removed = await svc.promote_students(db, payload.ids)
+    n, reps_removed = await svc.promote_students(db, payload.ids, actor)
     return {"promoted": n, "repsRemoved": reps_removed}
 
 
@@ -192,9 +192,9 @@ async def promote(
 async def graduate(
     payload: IdListPayload,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
     # repsRemoved: same rule as promotion — the class is gone, so its shared
     # login goes with it.
-    n, reps_removed = await svc.graduate_students(db, payload.ids)
+    n, reps_removed = await svc.graduate_students(db, payload.ids, actor)
     return {"graduated": n, "repsRemoved": reps_removed}

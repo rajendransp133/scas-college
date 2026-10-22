@@ -6,8 +6,10 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.cache as cache_keys
+from enums.AuditAction import AuditActionEnum
 from ids import new_id
-from models import Teacher
+from models import Teacher, User
+from services.audit import changed_fields, make_audit
 from services.cache import invalidate
 from schemas.Teacher import TeacherCreate, TeacherUpdate
 from services.pagination import PageParams, apply_sort, paginate, search_clause
@@ -85,33 +87,60 @@ async def get_teacher(db: AsyncSession, teacher_id: str) -> Teacher:
     return t
 
 
-async def create_teacher(db: AsyncSession, data: TeacherCreate) -> Teacher:
+def _label(teacher: Teacher) -> str:
+    return f"{teacher.employee_id} {teacher.name} ({teacher.id})"
+
+
+async def create_teacher(db: AsyncSession, data: TeacherCreate, actor: User) -> Teacher:
     if data.is_hod:
         await _demote_other_hods(db, data.department_id, keep_id=None)
     teacher = Teacher(id=new_id("tch"), **data.model_dump(by_alias=False))
     db.add(teacher)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_TEACHER,
+            note=f"Created teacher {_label(teacher)}" + (" as HOD" if data.is_hod else ""),
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)
     return teacher
 
 
 async def update_teacher(
-    db: AsyncSession, teacher_id: str, data: TeacherUpdate
+    db: AsyncSession, teacher_id: str, data: TeacherUpdate, actor: User
 ) -> Teacher:
     teacher = await get_teacher(db, teacher_id)
     fields = data.model_dump(exclude_unset=True, by_alias=False)
     target_dept = fields.get("department_id", teacher.department_id)
     if fields.get("is_hod"):
         await _demote_other_hods(db, target_dept, keep_id=teacher_id)
+    changes = changed_fields(teacher, fields)
     apply_updates(teacher, data)
+    if changes:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_TEACHER,
+                note=f"Updated teacher {_label(teacher)}: {', '.join(changes)}",
+            )
+        )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)
     return teacher
 
 
-async def delete_teacher(db: AsyncSession, teacher_id: str) -> None:
+async def delete_teacher(db: AsyncSession, teacher_id: str, actor: User) -> None:
     # DB cascades drop assignments; User.teacher_id is SET NULL (account survives).
     teacher = await get_teacher(db, teacher_id)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.DELETE_TEACHER,
+            note=f"Deleted teacher {_label(teacher)}",
+        )
+    )
     await db.delete(teacher)
     await db.commit()
     # The cascade took this teacher's assignments with it; their cached
@@ -119,10 +148,23 @@ async def delete_teacher(db: AsyncSession, teacher_id: str) -> None:
     await invalidate(cache_keys.ASSIGNMENTS)
 
 
-async def set_hod(db: AsyncSession, teacher_id: str, is_hod: bool) -> Teacher:
+async def set_hod(
+    db: AsyncSession, teacher_id: str, is_hod: bool, actor: User
+) -> Teacher:
     teacher = await get_teacher(db, teacher_id)
     if is_hod:
         await _demote_other_hods(db, teacher.department_id, keep_id=teacher_id)
+    if teacher.is_hod != is_hod:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_TEACHER,
+                note=(
+                    f"{'Made' if is_hod else 'Removed'} {_label(teacher)} "
+                    f"{'HOD of' if is_hod else 'as HOD of'} {teacher.department_id}"
+                ),
+            )
+        )
     teacher.is_hod = is_hod
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(teacher)

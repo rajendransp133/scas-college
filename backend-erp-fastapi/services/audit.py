@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import HTTPException, status
+from pydantic.alias_generators import to_camel
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -72,6 +73,22 @@ async def guard_attendance_cascade(
             ),
         )
     )
+
+
+def changed_fields(row: object, fields: Mapping[str, Any]) -> list[str]:
+    """camelCase names of the fields an update would actually change on `row`.
+
+    For administrative audit notes: *which* fields changed, never their values
+    — a student update can touch an address or a guardian's phone, and the log
+    is readable by every `view_audit` role and kept forever. Call it before the
+    update is applied. `password` is never a column, so callers report a reset
+    separately.
+    """
+    return [
+        to_camel(key)
+        for key, value in fields.items()
+        if key != "password" and getattr(row, key, None) != value
+    ]
 
 
 def make_audit(

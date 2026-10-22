@@ -30,9 +30,9 @@ async def list_assignments(
 async def assign_teacher(
     data: AssignmentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.assign_teacher(db, data.course_id, data.teacher_id, data.term_id)
+    return await svc.assign_teacher(db, data.course_id, data.teacher_id, data.term_id, actor)
 
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT)
@@ -41,6 +41,6 @@ async def unassign_teacher(
     teacher_id: str = Query(..., alias="teacherId"),
     term_id: str = Query(..., alias="termId"),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    await svc.unassign_teacher(db, course_id, teacher_id, term_id)
+    await svc.unassign_teacher(db, course_id, teacher_id, term_id, actor)

@@ -6,8 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import services.cache as cache_keys
+from enums.AuditAction import AuditActionEnum
 from ids import new_id
-from models import CourseAssignment
+from models import CourseAssignment, User
+from services.audit import make_audit
 from services.cache import invalidate
 from services.util import commit_or_raise, not_found
 
@@ -30,7 +32,7 @@ async def list_assignments(
 
 
 async def assign_teacher(
-    db: AsyncSession, course_id: str, teacher_id: str, term_id: str
+    db: AsyncSession, course_id: str, teacher_id: str, term_id: str, actor: User
 ) -> CourseAssignment:
     existing = await db.execute(
         select(CourseAssignment).where(
@@ -49,6 +51,15 @@ async def assign_teacher(
         term_id=term_id,
     )
     db.add(asg)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.ASSIGN_COURSE,
+            course_id=course_id,
+            term_id=term_id,
+            note=f"Assigned teacher {teacher_id}",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(asg)
     # Teachers' "my courses" sets are cached per (teacher, term).
@@ -57,7 +68,7 @@ async def assign_teacher(
 
 
 async def unassign_teacher(
-    db: AsyncSession, course_id: str, teacher_id: str, term_id: str
+    db: AsyncSession, course_id: str, teacher_id: str, term_id: str, actor: User
 ) -> None:
     existing = await db.execute(
         select(CourseAssignment).where(
@@ -69,6 +80,15 @@ async def unassign_teacher(
     found = existing.scalar_one_or_none()
     if found is None:
         raise not_found("Assignment not found")
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.UNASSIGN_COURSE,
+            course_id=course_id,
+            term_id=term_id,
+            note=f"Unassigned teacher {teacher_id}",
+        )
+    )
     await db.delete(found)
     await db.commit()
     await invalidate(cache_keys.ASSIGNMENTS)

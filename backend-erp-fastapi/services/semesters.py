@@ -5,9 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 import services.cache as cache_keys
+from enums.AuditAction import AuditActionEnum
 from ids import new_id
 from models import Course, Semester, User
-from services.audit import guard_attendance_cascade
+from services.audit import guard_attendance_cascade, make_audit
 from services.cache import cached, invalidate_curriculum
 from schemas.Course import CourseCreate, CourseFlatResponse
 from schemas.Semester import SemesterCreate
@@ -71,9 +72,16 @@ async def list_semesters(db: AsyncSession, program_id: str) -> list[Semester]:
     return list(rows.scalars().all())
 
 
-async def add_semester(db: AsyncSession, data: SemesterCreate) -> Semester:
+async def add_semester(db: AsyncSession, data: SemesterCreate, actor: User) -> Semester:
     sem = Semester(id=new_id("sem"), program_id=data.program_id, number=data.number)
     db.add(sem)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_SEMESTER,
+            note=f"Added semester {sem.number} to {sem.program_id} ({sem.id})",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(sem)
     await invalidate_curriculum()
@@ -95,13 +103,20 @@ async def delete_semester(db: AsyncSession, user: User, semester_id: str) -> Non
         label=f"Semester {sem.number}",
         courses=select(Course.id).where(Course.semester_id == semester_id),
     )
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.DELETE_SEMESTER,
+            note=f"Deleted semester {sem.number} of {sem.program_id} ({sem.id})",
+        )
+    )
     await db.delete(sem)
     await db.commit()
     await invalidate_curriculum()
 
 
 async def add_course(
-    db: AsyncSession, semester_id: str, data: CourseCreate
+    db: AsyncSession, semester_id: str, data: CourseCreate, actor: User
 ) -> Course:
     await get_semester(db, semester_id)  # 404 if missing
     course = Course(
@@ -113,6 +128,14 @@ async def add_course(
         semester_id=semester_id,
     )
     db.add(course)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_COURSE,
+            course_id=course.id,
+            note=f"Created course {course.code} {course.name} in {semester_id}",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(course)
     await invalidate_curriculum()
@@ -130,6 +153,15 @@ async def delete_course(
         user,
         label=f"Course {course.code}",
         courses=select(Course.id).where(Course.id == course_id),
+    )
+    # The course lookup can't resolve this id afterwards — name it in the note.
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.DELETE_COURSE,
+            course_id=course.id,
+            note=f"Deleted course {course.code} {course.name} from {semester_id}",
+        )
     )
     await db.delete(course)
     await db.commit()

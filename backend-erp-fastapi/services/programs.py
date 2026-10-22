@@ -6,9 +6,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from enums.AuditAction import AuditActionEnum
 from ids import new_id
 from models import Course, Program, Semester, User
-from services.audit import guard_attendance_cascade
+from services.audit import changed_fields, guard_attendance_cascade, make_audit
 from services.cache import invalidate_curriculum
 from schemas.Program import ProgramCreate, ProgramUpdate
 from services.util import apply_updates, commit_or_raise, not_found
@@ -51,7 +52,7 @@ async def _get_program_row(db: AsyncSession, program_id: str) -> Program:
     return prog
 
 
-async def create_program(db: AsyncSession, data: ProgramCreate) -> Program:
+async def create_program(db: AsyncSession, data: ProgramCreate, actor: User) -> Program:
     prog = Program(
         id=new_id("prog"),
         name=data.name,
@@ -63,6 +64,16 @@ async def create_program(db: AsyncSession, data: ProgramCreate) -> Program:
     # Auto-generate semesters 1..N (mirrors the frontend create dialog).
     for n in range(1, data.semester_count + 1):
         db.add(Semester(id=new_id("sem"), program_id=prog.id, number=n))
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_PROGRAM,
+            note=(
+                f"Created program {prog.code} {prog.name} ({prog.id}) in "
+                f"{prog.department_id} with {data.semester_count} semesters"
+            ),
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(prog)
     await invalidate_curriculum()
@@ -70,10 +81,19 @@ async def create_program(db: AsyncSession, data: ProgramCreate) -> Program:
 
 
 async def update_program(
-    db: AsyncSession, program_id: str, data: ProgramUpdate
+    db: AsyncSession, program_id: str, data: ProgramUpdate, actor: User
 ) -> Program:
     prog = await _get_program_row(db, program_id)
+    changes = changed_fields(prog, data.model_dump(exclude_unset=True, by_alias=False))
     apply_updates(prog, data)
+    if changes:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_PROGRAM,
+                note=f"Updated program {prog.code} ({prog.id}): {', '.join(changes)}",
+            )
+        )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(prog)
     await invalidate_curriculum()
@@ -89,6 +109,13 @@ async def delete_program(db: AsyncSession, user: User, program_id: str) -> None:
         courses=select(Course.id)
         .join(Semester, Semester.id == Course.semester_id)
         .where(Semester.program_id == program_id),
+    )
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.DELETE_PROGRAM,
+            note=f"Deleted program {prog.code} {prog.name} ({prog.id})",
+        )
     )
     await db.delete(prog)
     await db.commit()

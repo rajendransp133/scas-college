@@ -74,7 +74,9 @@ export default function AuditPage() {
   // Every lock/unlock ever made — the freeze card shows this timeline so it's
   // always clear when records were frozen, and by whom. Fetched by action
   // (these entries carry no termId).
-  const { data: lockHistory = EMPTY_ARRAY } = useLockHistory(can.viewAudit);
+  const { data: lockHistory = EMPTY_ARRAY } = useLockHistory(
+    can.viewAudit || can.lockAttendance,
+  );
   const lastLockEvent = lockHistory[0];
 
   const [lockInput, setLockInput] = useState("");
@@ -92,8 +94,11 @@ export default function AuditPage() {
     [directory],
   );
 
-  // Route guard already blocks other roles; this is belt-and-braces.
-  if (!can.viewAudit) return null;
+  // Route guard already blocks other roles; this is belt-and-braces. The
+  // attendance-manager reaches the page through lockAttendance alone: it gets
+  // the freeze card, not the warning signs or the log (both need viewAudit,
+  // and the server refuses them).
+  if (!can.viewAudit && !can.lockAttendance) return null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -107,8 +112,13 @@ export default function AuditPage() {
 
       <PageHeader
         title="Attendance Oversight"
-        description="Spot suspicious changes and freeze finalized records."
+        description={
+          can.viewAudit
+            ? "Spot suspicious changes and freeze finalized records."
+            : "Freeze finalized records."
+        }
         action={
+          can.viewAudit && (
           <Button
             variant="outline"
             render={<Link href="/attendance/audit/log" />}
@@ -118,11 +128,12 @@ export default function AuditPage() {
             Audit log
             <ArrowRight size={14} />
           </Button>
+          )
         }
       />
 
       {/* Warning signs */}
-      {flagsLoading ? (
+      {!can.viewAudit ? null : flagsLoading ? (
         <CardGridSkeleton cards={2} lines={2} className="md:grid-cols-2 xl:grid-cols-2" />
       ) : (
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">

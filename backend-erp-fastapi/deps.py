@@ -62,14 +62,16 @@ def caps_of(user: User) -> Capabilities:
     return role_capabilities(user.role)
 
 
-def require_capability(flag: str):
-    """Dependency factory: 403 unless the current user's capability `flag` is truthy."""
+def require_capability(*flags: str):
+    """Dependency factory: 403 unless *any* of the capability `flags` is truthy
+    for the current user (usually just one)."""
 
     async def _dep(user: User = Depends(get_current_user)) -> User:
-        if not getattr(caps_of(user), flag):
+        caps = caps_of(user)
+        if not any(getattr(caps, flag) for flag in flags):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing capability: {flag}",
+                detail=f"Missing capability: {' or '.join(flags)}",
             )
         return user
 

@@ -38,7 +38,7 @@ python -m uvicorn main:app --reload --port 8000   # docs at http://localhost:800
   --autogenerate -m "msg"`.
 - **Windows:** run Python in **PowerShell**, not Git Bash. When running scripts by absolute path,
   set `PYTHONPATH` to the backend dir so top-level packages import.
-- **Tests:** `python -m pytest` (144 tests). `tests/` uses pytest + testcontainers — a throwaway
+- **Tests:** `python -m pytest` (153 tests). `tests/` uses pytest + testcontainers — a throwaway
   `postgres:16` per session, migrated with `alembic upgrade head`, truncated between tests. Docker
   must be running. Factories in `conftest.py` arrange scenarios through the real HTTP API.
 
@@ -190,11 +190,47 @@ with nothing in the log:
 
 `remove-record` is a new `AuditActionEnum` value. It needed **no migration**:
 `str_enum` is `native_enum=False` with `create_constraint` defaulting off, so
-the column is a bare `VARCHAR(14)` with no CHECK — a new value ≤14 chars just
-works. Mirrored in `lib/types.ts` (`AUDIT_ACTIONS`, `AUDIT_ACTION_LABELS`) and
+the column is a bare VARCHAR with no CHECK. (It was `VARCHAR(14)`, sized to the
+longest value at creation; migration `a9c3e7f25d10` widened it to 32 for the
+administrative actions below, and the model pins `length=32`, so any new value
+up to 32 chars still needs no migration.) Mirrored in `lib/types.ts` (`AUDIT_ACTIONS`, `AUDIT_ACTION_LABELS`) and
 the log page's `ACTION_BADGE`, all of which are exhaustive `Record<AuditAction,…>`
 maps, so TypeScript flags the ones you forget. Tests:
 `tests/test_attendance_record_integrity.py`.
+
+## Administrative changes are audited too
+
+The log used to cover attendance only — an account could be created, promoted
+to admin, have its password reset and be deleted with no trace. Every
+administrative write now adds one `AuditEntry` **in the same transaction**
+(`db.add(make_audit(...))` before the commit), so a refused write leaves no
+entry and an accepted one can't lose it:
+
+| area | actions |
+|---|---|
+| accounts (`services/users.py`) | `create-user`, `update-user` (incl. admin password reset, role change, disable), `delete-user`, `change-password` (self-service) |
+| students | `create-student`, `update-student` (incl. activate/deactivate), `delete-student`, `promote-students`, `graduate-students` (one entry per batch, with per-class counts) |
+| teachers | `create-teacher`, `update-teacher` (incl. HOD changes), `delete-teacher` |
+| curriculum | `create/update/delete-department`, `create/update/delete-program`, `create/delete-semester`, `create/delete-course` |
+| staffing & terms | `assign-course` / `unassign-course` (carry `courseId` + `termId`), `create-term`, `set-current-term` |
+
+Rules: the entity is named in `note` with its id (a deleted row can't be
+resolved later, so the note is the only record left); `student_id`/`course_id`
+are filled where the entity is one. **Updates list *which* fields changed,
+never their values** — `services/audit.py::changed_fields` — because a student
+update can carry an address or a guardian's phone and the log is kept forever;
+passwords never appear. No-op updates write nothing. Except assignments, these
+entries have no `termId`, so the term-filtered log shows them in every term.
+Services take the acting `User` for this; routers pass it. Oversight's
+correction counts (`CORRECTION_ACTIONS`) are unaffected. Tests:
+`tests/test_admin_audit.py`.
+
+**The attendance-manager holds `lock_attendance`** (not `view_audit`): it runs
+the registers, so it may freeze them, but the red flags and the log watch the
+people who correct attendance — itself included. `GET /audit/lock-history`
+takes `require_capability("view_audit", "lock_attendance")` (any-of) so the
+freeze card can show its timeline; `/audit` and `/attendance/red-flags` stay
+`view_audit`-only.
 
 ## Read scoping is server-side (`services/scope.py`)
 
@@ -535,7 +571,7 @@ Rules added by the code-quality pass; follow them when writing a new endpoint.
 
 ## Tests
 
-`tests/` (pytest + testcontainers, 144 tests) covers auth, cascades, single-HOD,
+`tests/` (pytest + testcontainers, 153 tests) covers auth, cascades, single-HOD,
 attendance correction/audit/lock, uniqueness, account management + the
 admin-escalation guard, and student *and* teacher optional-field intake.
 `test_scope_regressions.py` (write scope after a read, `/stats` and breakdown

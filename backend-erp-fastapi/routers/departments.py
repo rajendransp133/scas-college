@@ -40,9 +40,9 @@ async def get_department(
 async def create_department(
     data: DepartmentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.create_department(db, data)
+    return await svc.create_department(db, data, actor)
 
 
 @router.put("/{dept_id}", response_model=DepartmentResponse)
@@ -50,9 +50,9 @@ async def update_department(
     dept_id: str,
     data: DepartmentUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.update_department(db, dept_id, data)
+    return await svc.update_department(db, dept_id, data, actor)
 
 
 @router.delete("/{dept_id}", status_code=status.HTTP_204_NO_CONTENT)

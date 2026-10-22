@@ -29,9 +29,9 @@ async def list_semesters(
 async def add_semester(
     data: SemesterCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.add_semester(db, data)
+    return await svc.add_semester(db, data, actor)
 
 
 @router.delete("/{semester_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -52,9 +52,9 @@ async def add_course(
     semester_id: str,
     data: CourseCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.add_course(db, semester_id, data)
+    return await svc.add_course(db, semester_id, data, actor)
 
 
 @router.delete(

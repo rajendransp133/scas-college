@@ -30,15 +30,22 @@ describe("isPathAllowed()", () => {
   })
 
   // The trickiest rule: /attendance/audit (and its /log subpath) is a prefix
-  // match excluded from the /attendance grant for teacher/attendance-manager/hod,
-  // even though it lives under /attendance.
-  it("excludes /attendance/audit (and /attendance/audit/log) from the /attendance grant for teacher/attendance-manager/hod", () => {
-    for (const role of ["teacher", "attendance-manager", "hod"] as const) {
+  // match excluded from the /attendance grant for teacher/hod, even though it
+  // lives under /attendance.
+  it("excludes /attendance/audit (and /attendance/audit/log) from the /attendance grant for teacher/hod", () => {
+    for (const role of ["teacher", "hod"] as const) {
       expect(isPathAllowed(role, "/attendance/audit")).toBe(false)
       expect(isPathAllowed(role, "/attendance/audit/log")).toBe(false)
       // but the plain /attendance prefix is still allowed for these roles
       expect(isPathAllowed(role, "/attendance")).toBe(true)
     }
+  })
+
+  // The attendance-manager may freeze records, so it reaches the oversight page
+  // itself — but never the log beneath it (no viewAudit).
+  it("lets attendance-manager open /attendance/audit but not /attendance/audit/log", () => {
+    expect(isPathAllowed("attendance-manager", "/attendance/audit")).toBe(true)
+    expect(isPathAllowed("attendance-manager", "/attendance/audit/log")).toBe(false)
   })
 
   it("also excludes /attendance/sessions for teacher, hod and principal (admin/attendance-manager only)", () => {
@@ -71,10 +78,10 @@ describe("isPathAllowed()", () => {
     expect(isPathAllowed("hod", "/promotions")).toBe(false)
   })
 
-  it("attendance-manager is scoped to attendance pages only (not audit)", () => {
+  it("attendance-manager is scoped to attendance pages only (oversight page yes, audit log no)", () => {
     expect(isPathAllowed("attendance-manager", "/attendance")).toBe(true)
     expect(isPathAllowed("attendance-manager", "/attendance/register")).toBe(true)
-    expect(isPathAllowed("attendance-manager", "/attendance/audit")).toBe(false)
+    expect(isPathAllowed("attendance-manager", "/attendance/audit/log")).toBe(false)
     expect(isPathAllowed("attendance-manager", "/students")).toBe(false)
     expect(isPathAllowed("attendance-manager", "/materials")).toBe(false)
   })
@@ -126,14 +133,14 @@ describe("roleCapabilities()", () => {
     expect(caps.materialScope).toBe("own")
   })
 
-  it("attendance-manager: markScope all + overrideLock true, but viewAudit stays false (admin only)", () => {
+  it("attendance-manager: markScope all + overrideLock + lockAttendance, but viewAudit stays false (admin only)", () => {
     const caps = roleCapabilities("attendance-manager")
     expect(caps.markScope).toBe("all")
     expect(caps.overrideLock).toBe(true)
     expect(caps.editAttendance).toBe(true)
     expect(caps.deleteAttendance).toBe(true)
     expect(caps.viewAudit).toBe(false)
-    expect(caps.lockAttendance).toBe(false)
+    expect(caps.lockAttendance).toBe(true)
   })
 
   it("principal: manageUsers + manageAcademics + markScope all, but no correction/oversight rights", () => {

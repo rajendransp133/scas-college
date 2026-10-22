@@ -7,11 +7,13 @@ from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from enums.AuditAction import AuditActionEnum
 from enums.UserRole import UserRoleEnum
 from ids import new_id
 import services.cache as cache_keys
 from models import User
 from schemas.User import UserCreate, UserUpdate
+from services.audit import changed_fields, make_audit
 from services.cache import cached, invalidate
 from security import hash_password, verify_password
 from services.pagination import PageParams, apply_sort, paginate, search_clause
@@ -177,6 +179,10 @@ def assert_may_manage(actor: User, target_role: UserRoleEnum) -> None:
         )
 
 
+def _label(user: User) -> str:
+    return f"{user.name} <{user.email}> ({user.id})"
+
+
 async def create_user(db: AsyncSession, data: UserCreate, actor: User) -> User:
     assert_may_manage(actor, data.role)
     _assert_role_shape(data.role, data.program_id, data.class_semester)
@@ -195,6 +201,13 @@ async def create_user(db: AsyncSession, data: UserCreate, actor: User) -> User:
     )
     _clear_fields_the_role_does_not_use(user)
     db.add(user)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_USER,
+            note=f"Created {user.role.value} account {_label(user)}",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(user)
     await invalidate(cache_keys.DIRECTORY)
@@ -238,6 +251,17 @@ async def update_user(
     resetting_password = bool(fields.get("password"))
     disabling = fields.get("is_active") is False and user.is_active
 
+    # Role changes and enable/disable are what oversight looks for, so they are
+    # spelled out rather than left as a bare field name.
+    changes = [
+        f"role {user.role.value} → {new_role.value}" if name == "role"
+        else ("disabled" if disabling else "re-enabled") if name == "isActive"
+        else name
+        for name in changed_fields(user, fields)
+    ]
+    if resetting_password:
+        changes.append("password reset")
+
     for key, value in fields.items():
         if key == "password":
             if value:
@@ -248,6 +272,15 @@ async def update_user(
 
     if resetting_password or disabling:
         _revoke_tokens(user)
+
+    if changes:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_USER,
+                note=f"Updated account {_label(user)}: {', '.join(changes)}",
+            )
+        )
 
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(user)
@@ -301,6 +334,13 @@ async def change_password(
     # elsewhere, or a stolen one) stops working — the whole point of a password
     # change. The caller re-issues a token for the current device.
     _revoke_tokens(user)
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.CHANGE_PASSWORD,
+            note=f"{_label(user)} changed their own password",
+        )
+    )
     await db.commit()
     await db.refresh(user)
     return user
@@ -314,6 +354,15 @@ async def delete_user(db: AsyncSession, user_id: str, actor: User) -> None:
         )
     user = await get_user(db, user_id)
     assert_may_manage(actor, user.role)
+    # The directory can no longer resolve this id once the row is gone, so the
+    # note carries the name and email — the entry is the only record left.
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.DELETE_USER,
+            note=f"Deleted {user.role.value} account {_label(user)}",
+        )
+    )
     await db.delete(user)
     await db.commit()
     await invalidate(cache_keys.DIRECTORY)

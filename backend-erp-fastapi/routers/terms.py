@@ -24,15 +24,15 @@ async def list_terms(
 async def add_term(
     data: TermCreate,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.add_term(db, data)
+    return await svc.add_term(db, data, actor)
 
 
 @router.put("/current", response_model=TermResponse)
 async def set_current_term(
     payload: SetCurrentTermPayload,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(_academics),
+    actor: User = Depends(_academics),
 ):
-    return await svc.set_current_term(db, payload.term_id)
+    return await svc.set_current_term(db, payload.term_id, actor)

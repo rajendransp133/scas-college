@@ -278,10 +278,19 @@ async def test_audit_term_filter_keeps_college_wide_entries_and_drops_other_term
     await client.put("/lock-date", json={"date": "2024-01-01"}, headers=admin_headers)
 
     page = (
-        await client.get("/audit", params={"termId": other_term["id"]}, headers=admin_headers)
+        await client.get(
+            "/audit",
+            params={"termId": other_term["id"], "pageSize": 200},
+            headers=admin_headers,
+        )
     ).json()
-    actions = sorted(e["action"] for e in page["items"])
+    # Arranging the class also logged its administrative creates (department,
+    # program, course, students, terms) — college-wide, so they show in every
+    # term too. This test is about the attendance entries.
+    attendance = [
+        e for e in page["items"] if e["action"] in ("mark", "edit", "lock", "unlock")
+    ]
+    actions = sorted(e["action"] for e in attendance)
     assert actions == ["lock", "mark"], page
-    assert page["total"] == 2
     # Newest first across both branches of the union.
     assert page["items"][0]["action"] == "lock"

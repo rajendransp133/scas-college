@@ -106,12 +106,16 @@ const CAPABILITIES: Record<UserRole, Capabilities> = {
     markScope: "own", // first-time only; blocked once a session exists
     materialScope: "own",
   },
+  // Runs the registers day to day, so it also freezes them (the oversight
+  // page's freeze card) — but no viewAudit: the red flags and the log watch the
+  // people who correct attendance, this role included.
   "attendance-manager": {
     ...NONE,
     markScope: "all",
     editAttendance: true,
     deleteAttendance: true,
     overrideLock: true,
+    lockAttendance: true,
   },
   // HODs also teach: they can take first-time attendance for their own
   // assigned courses, but everything else stays view-only, dept-scoped.
@@ -165,8 +169,11 @@ const STUDENT_REP_ROUTES = [
   "/attendance/summary",
   "/materials",
 ]
-/** Oversight page — admin only, even though it lives under /attendance. */
+/** Oversight page — admin only, even though it lives under /attendance. The
+ * attendance-manager is the exception: it may open the page itself (to freeze
+ * records) but not the log beneath it. */
 const AUDIT_ROUTE = "/attendance/audit"
+const AUDIT_LOG_ROUTE = "/attendance/audit/log"
 /** Session management — admin/attendance-manager only; everyone else views
  * saved attendance in the Register instead. */
 const SESSIONS_ROUTE = "/attendance/sessions"
@@ -190,7 +197,8 @@ export function isPathAllowed(role: UserRole, pathname: string): boolean {
       )
     case "attendance-manager":
       return (
-        matches(pathname, ATTENDANCE_ROUTES) && !matches(pathname, [AUDIT_ROUTE])
+        matches(pathname, ATTENDANCE_ROUTES) &&
+        !matches(pathname, [AUDIT_LOG_ROUTE])
       )
     case "hod":
       return (

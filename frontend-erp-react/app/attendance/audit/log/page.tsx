@@ -35,15 +35,47 @@ import {
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+const CREATE = "border-sky-200 bg-sky-50 text-sky-700";
+const UPDATE = "border-violet-200 bg-violet-50 text-violet-700";
+const DELETE = "border-red-200 bg-red-50 text-red-700";
+const NEUTRAL = "border-slate-200 bg-slate-50 text-slate-700";
+
 const ACTION_BADGE: Record<AuditAction, string> = {
   mark: "border-emerald-200 bg-emerald-50 text-emerald-700",
   edit: "border-amber-200 bg-amber-50 text-amber-700",
   // Both destructive actions share the red badge — a removal is as severe as
   // dropping the whole session, just narrower.
-  "remove-record": "border-red-200 bg-red-50 text-red-700",
-  "delete-session": "border-red-200 bg-red-50 text-red-700",
-  lock: "border-slate-200 bg-slate-50 text-slate-700",
-  unlock: "border-slate-200 bg-slate-50 text-slate-700",
+  "remove-record": DELETE,
+  "delete-session": DELETE,
+  lock: NEUTRAL,
+  unlock: NEUTRAL,
+  // Administrative changes: blue adds, violet edits, red deletes.
+  "create-user": CREATE,
+  "update-user": UPDATE,
+  "delete-user": DELETE,
+  "change-password": UPDATE,
+  "create-student": CREATE,
+  "update-student": UPDATE,
+  "delete-student": DELETE,
+  "promote-students": UPDATE,
+  "graduate-students": UPDATE,
+  "create-teacher": CREATE,
+  "update-teacher": UPDATE,
+  "delete-teacher": DELETE,
+  "create-department": CREATE,
+  "update-department": UPDATE,
+  "delete-department": DELETE,
+  "create-program": CREATE,
+  "update-program": UPDATE,
+  "delete-program": DELETE,
+  "create-semester": CREATE,
+  "delete-semester": DELETE,
+  "create-course": CREATE,
+  "delete-course": DELETE,
+  "assign-course": CREATE,
+  "unassign-course": DELETE,
+  "create-term": CREATE,
+  "set-current-term": NEUTRAL,
 };
 
 const fmtWhen = (iso: string) =>
@@ -135,7 +167,7 @@ export default function AuditLogPage() {
 
       <PageHeader
         title="Audit Log"
-        description="Every mark, correction and deletion — newest first. This log can never be edited or erased."
+        description="Every mark, correction and deletion, plus changes to accounts, students, staff and curriculum — newest first. This log can never be edited or erased."
       />
 
       {/* Filters */}

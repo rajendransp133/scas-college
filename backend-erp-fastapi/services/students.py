@@ -5,12 +5,13 @@ from typing import Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from enums.AuditAction import AuditActionEnum
 from enums.UserRole import UserRoleEnum
 from ids import new_id
 from models import Program, Semester, Student, User
 from schemas.Student import StudentCreate, StudentUpdate
 import services.cache as cache_keys
-from services.audit import guard_attendance_cascade
+from services.audit import changed_fields, guard_attendance_cascade, make_audit
 from services.cache import invalidate
 from services.pagination import PageParams, apply_sort, paginate, search_clause
 from services.util import apply_updates, commit_or_raise, not_found, unprocessable
@@ -172,17 +173,44 @@ async def _assert_program_in_department(
         raise unprocessable("The program does not belong to that department")
 
 
-async def create_student(db: AsyncSession, data: StudentCreate) -> Student:
+def _label(st: Student) -> str:
+    return f"{st.roll_number} {st.name}"
+
+
+def _class_counts(students: list[Student]) -> str:
+    """E.g. "progX sem 3 (40), …" — which classes a bulk action touched, captured
+    before the semester numbers change."""
+    counts: dict[tuple[Optional[str], int], int] = {}
+    for st in students:
+        key = (st.program_id, st.current_semester)
+        counts[key] = counts.get(key, 0) + 1
+    return ", ".join(
+        f"{program or 'no program'} sem {sem} ({n})"
+        for (program, sem), n in sorted(counts.items(), key=lambda kv: str(kv[0]))
+    )
+
+
+async def create_student(
+    db: AsyncSession, data: StudentCreate, actor: User
+) -> Student:
     await _assert_program_in_department(db, data.department_id, data.program_id)
     st = Student(id=new_id("stu"), **data.model_dump(by_alias=False))
     db.add(st)
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.CREATE_STUDENT,
+            student_id=st.id,
+            note=f"Created student {_label(st)}",
+        )
+    )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(st)
     return st
 
 
 async def update_student(
-    db: AsyncSession, student_id: str, data: StudentUpdate
+    db: AsyncSession, student_id: str, data: StudentUpdate, actor: User
 ) -> Student:
     st = await get_student(db, student_id)
     fields = data.model_dump(exclude_unset=True, by_alias=False)
@@ -192,7 +220,17 @@ async def update_student(
             fields.get("department_id", st.department_id),
             fields.get("program_id", st.program_id),
         )
+    changes = changed_fields(st, fields)
     apply_updates(st, data)
+    if changes:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.UPDATE_STUDENT,
+                student_id=st.id,
+                note=f"Updated student {_label(st)}: {', '.join(changes)}",
+            )
+        )
     await commit_or_raise(db, _CONFLICTS)
     await db.refresh(st)
     return st
@@ -207,13 +245,34 @@ async def delete_student(db: AsyncSession, user: User, student_id: str) -> None:
     await guard_attendance_cascade(
         db, user, label=f"Student {st.roll_number}", student_id=st.id
     )
+    # Separate from the cascade entry above (which only appears when attendance
+    # went with the student): this one records the student, always.
+    db.add(
+        make_audit(
+            user.id,
+            AuditActionEnum.DELETE_STUDENT,
+            student_id=st.id,
+            note=f"Deleted student {_label(st)}",
+        )
+    )
     await db.delete(st)
     await db.commit()
 
 
-async def toggle_active(db: AsyncSession, student_id: str) -> Student:
+async def toggle_active(db: AsyncSession, student_id: str, actor: User) -> Student:
     st = await get_student(db, student_id)
     st.is_active = not st.is_active
+    db.add(
+        make_audit(
+            actor.id,
+            AuditActionEnum.UPDATE_STUDENT,
+            student_id=st.id,
+            note=(
+                f"{'Re-activated' if st.is_active else 'Deactivated'} "
+                f"student {_label(st)}"
+            ),
+        )
+    )
     await db.commit()
     await db.refresh(st)
     return st
@@ -327,7 +386,9 @@ async def _assert_none_in_final_semester(db: AsyncSession, moving: list[Student]
         )
 
 
-async def promote_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
+async def promote_students(
+    db: AsyncSession, ids: list[str], actor: User
+) -> tuple[int, int]:
     """Advance students a semester, retiring the rep login of any class that
     moves out in whole.
 
@@ -343,18 +404,32 @@ async def promote_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
 
     # Decide which classes are emptying *before* touching the semester numbers.
     vacated = await _fully_vacated(db, moving)
+    classes = _class_counts(moving)
     for st in moving:
         st.current_semester += 1
 
     removed = await _delete_rep_accounts(db, vacated)
     count = len(moving)
+    if count:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.PROMOTE_STUDENTS,
+                note=(
+                    f"Promoted {count} student(s) from {classes}; "
+                    f"{removed} class-rep login(s) retired"
+                ),
+            )
+        )
     await db.commit()
     if removed:
         await invalidate(cache_keys.DIRECTORY)
     return count, removed
 
 
-async def graduate_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]:
+async def graduate_students(
+    db: AsyncSession, ids: list[str], actor: User
+) -> tuple[int, int]:
     """Graduate students, retiring the rep login of any class that empties.
 
     Same rule as promotion — the class is gone, so its login goes with it.
@@ -376,6 +451,17 @@ async def graduate_students(db: AsyncSession, ids: list[str]) -> tuple[int, int]
 
     removed = await _delete_rep_accounts(db, vacated)
     count = len(leaving)
+    if count:
+        db.add(
+            make_audit(
+                actor.id,
+                AuditActionEnum.GRADUATE_STUDENTS,
+                note=(
+                    f"Graduated {count} student(s) from {_class_counts(leaving)}; "
+                    f"{removed} class-rep login(s) retired"
+                ),
+            )
+        )
     await db.commit()
     if removed:
         await invalidate(cache_keys.DIRECTORY)
