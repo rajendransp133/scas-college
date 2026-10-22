@@ -31,9 +31,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-scas}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scas_local_pw}
       POSTGRES_DB: ${POSTGRES_DB:-erp_scas}
-    # Same math as the production compose file: 4 gunicorn workers *
-    # (db_pool_size=8 + db_max_overflow=4) = 48 from `api`, plus headroom.
-    command: postgres -c max_connections=150
+    # Same sizing as the production compose file (1 GB VPS): 2 gunicorn
+    # workers * (db_pool_size=8 + db_max_overflow=4) = 24 from `api`, plus
+    # headroom. The mem_limits below mirror it too; on a roomy laptop they
+    # are simply never reached.
+    command: postgres -c max_connections=40 -c shared_buffers=64MB
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}
     volumes:
       # Named volume, not a bind mount — the data survives `down` and every
       # rebuild, and is only destroyed by `down -v`.
@@ -53,7 +56,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly no
+    command: redis-server --appendonly no --maxmemory 48mb --maxmemory-policy allkeys-lru
+    mem_limit: ${REDIS_MEM_LIMIT:-80m}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -118,7 +122,7 @@ services:
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-720}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       SENTRY_DSN: ${SENTRY_DSN:-}
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
       # Same-origin through Caddy, so CORS is not actually exercised — set
       # correctly anyway so a direct browser call to :8000 behaves.
       CORS_ORIGINS: '["http://localhost:${APP_PORT:-8080}"]'
@@ -129,6 +133,7 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
+    mem_limit: ${API_MEM_LIMIT:-450m}
     expose:
       - "8000"
     healthcheck:
@@ -152,6 +157,8 @@ services:
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: /api
+      NODE_OPTIONS: --max-old-space-size=${WEB_HEAP_MB:-160}
+    mem_limit: ${WEB_MEM_LIMIT:-250m}
     depends_on:
       - api
     expose:
@@ -160,6 +167,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: ${CADDY_MEM_LIMIT:-96m}
     ports:
       # 8080 rather than 80 to avoid colliding with anything already bound on
       # the host. Override with APP_PORT — but rebuild `web` afterwards.
