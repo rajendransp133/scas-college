@@ -59,6 +59,26 @@ docker compose -f docker-compose.local.yml down       # stop, keep data
 
 ---
 
+## Live deploy: erp.scascollege.ac.in
+
+The college VPS (139.84.210.114) runs the **`docker-compose.local.yml`** stack, not
+`docker-compose.yml`: host nginx already owns 80/443 (it also serves
+`id.scascollege.ac.in`), so Caddy can't bind them. Instead:
+
+- `/etc/nginx/sites-available/erp` terminates TLS (certbot, auto-renewing) and
+  proxies to `127.0.0.1:8080`, overwriting `X-Forwarded-For` with `$remote_addr`.
+- `.env` sets `APP_PORT=127.0.0.1:8080` — Docker port publishing bypasses ufw, so
+  without the loopback bind the stack is public over plain HTTP.
+- `Caddyfile.local` trusts private-range proxies so the client IP survives to the
+  login rate limiter.
+- Backups: `docker compose -f docker-compose.local.yml run --rm backup` (same
+  service as below), scheduled from root's crontab.
+
+Updating: `git pull && docker compose -f docker-compose.local.yml up -d --build`
+(the `bootstrap` service applies new migrations).
+
+---
+
 ## VPS deploy
 
 Docker Compose deploy for a single VPS. Services: `postgres`, `redis`,

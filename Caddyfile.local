@@ -7,6 +7,18 @@
 # routing below is otherwise identical, so what you exercise locally matches
 # what runs in production.
 
+{
+	# When this stack sits behind a host reverse proxy (erp.scascollege.ac.in:
+	# host nginx terminates TLS and forwards to 127.0.0.1:8080), every request
+	# arrives from the Docker bridge gateway. Trusting private ranges makes
+	# Caddy append to nginx's X-Forwarded-For instead of replacing it, so the
+	# API's login rate limiter (rate_limit.py) still sees the real client.
+	# Only safe because :8080 is published on loopback (APP_PORT in .env).
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 :80 {
 	# Path-based routing, same as production: /api/* goes to FastAPI with the
 	# prefix stripped (handle_path), everything else to Next.js. This is why

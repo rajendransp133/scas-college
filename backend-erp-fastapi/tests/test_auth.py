@@ -152,3 +152,19 @@ async def test_login_rate_limited_after_ten_attempts(client):
         assert r.status_code == 401
     r = await client.post("/auth/login", json=payload)
     assert r.status_code == 429
+
+
+async def test_login_rate_limit_is_per_client_behind_the_proxy(client):
+    # Behind Caddy every request has the same peer address; the limit must key
+    # on the forwarded client, or one user's typos lock out the whole college.
+    payload = {"email": "nobody@example.com", "password": "wrong"}
+    first = {"X-Forwarded-For": "203.0.113.1, 172.18.0.1"}
+    for _ in range(10):
+        r = await client.post("/auth/login", json=payload, headers=first)
+        assert r.status_code == 401
+    r = await client.post("/auth/login", json=payload, headers=first)
+    assert r.status_code == 429
+
+    other = {"X-Forwarded-For": "203.0.113.2, 172.18.0.1"}
+    r = await client.post("/auth/login", json=payload, headers=other)
+    assert r.status_code == 401

@@ -53,6 +53,35 @@ services:
       # database must not be reachable from the rest of the network.
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
 
+  # One-shot logical backup, same as docker-compose.yml's: pg_dump (custom
+  # format) → ./backups, keeping the newest BACKUP_KEEP dumps. Profile-gated so
+  # `up` never runs it; schedule
+  # `docker compose -f docker-compose.local.yml run --rm backup` from cron.
+  backup:
+    image: postgres:16
+    profiles: ["backup"]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-scas}
+      PGDATABASE: ${POSTGRES_DB:-erp_scas}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-scas_local_pw}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        ts=$$(date +%Y%m%d-%H%M%S)
+        out="/backups/scas-$${ts}.dump"
+        pg_dump -Fc -f "$${out}"
+        echo "wrote $${out}"
+        ls -1t /backups/scas-*.dump 2>/dev/null | tail -n +$$((BACKUP_KEEP + 1)) | xargs -r rm -f
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

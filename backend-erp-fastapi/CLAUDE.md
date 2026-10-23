@@ -500,10 +500,13 @@ deployment and horizontal scale:
 4. **Rate limiting.** `rate_limit.py`'s `slowapi` `Limiter` guards
    `/auth/login` (10/minute). Storage is Redis-backed when `REDIS_URL` is set,
    in-memory otherwise (only correct for one worker — see below). The key
-   function is `get_ipaddr` (X-Forwarded-For-aware), not `get_remote_address`
-   (which reads `request.client.host` directly) — required because the
-   Compose deploy puts Caddy in front of `api`, so `request.client.host` would
-   otherwise always be Caddy's own container IP. This is safe only because
+   function is `rate_limit.py::client_ip` — the **first** `X-Forwarded-For`
+   entry — required because the Compose deploy puts Caddy in front of `api`,
+   so `request.client.host` is always Caddy's own container IP. (slowapi's
+   `get_ipaddr` was used before and silently did that: it looks the header up
+   as `X_FORWARDED_FOR`, which never matches, so the whole college shared one
+   10/minute bucket.) Behind host nginx, `Caddyfile.local`'s `trusted_proxies`
+   keeps nginx's header instead of replacing it. This is safe only because
    `api` is never published to the host (see `docker-compose.yml`) — nothing
    but Caddy can reach it to forge the header.
 5. **CORS narrowed.** `allow_methods`/`allow_headers` list the app's actual
